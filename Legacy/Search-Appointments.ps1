@@ -1219,7 +1219,7 @@ function ProcessBatches()
 		    if ($deleteIds.Count -ge 500)
 		    {
 			    # Send the delete request
-                LogVerbose "Sending request to delete $($deleteIds.Count) items ($i remaining)"
+                LogVerbose "Sending request to delete $($deleteIds.Count) items ($i remaining).  SendCancellationsMode: $SendCancellationsMode"
                 ApplyEWSOAuthCredentials
 			    [void]$script:service.DeleteItems( $deleteIds, [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, $SendCancellationsMode, $Null )
 			    $deleteIds = [Activator]::CreateInstance($genericItemIdList)
@@ -1227,7 +1227,7 @@ function ProcessBatches()
 	    }
 	    if ($deleteIds.Count -gt 0)
 	    {
-            LogVerbose "Sending final delete request for $($deleteIds.Count) items"
+            LogVerbose "Sending final delete request for $($deleteIds.Count) items.  SendCancellationsMode: $SendCancellationsMode"
             ApplyEWSOAuthCredentials
 		    [void]$script:service.DeleteItems( $deleteIds, [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, $SendCancellationsMode, $Null )
 	    }
