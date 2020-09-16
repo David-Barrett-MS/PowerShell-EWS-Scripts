@@ -101,7 +101,7 @@ param (
 	[switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.1.5"
+$script:ScriptVersion = "1.1.6"
 
 # Define our functions
 
@@ -295,9 +295,12 @@ function LoadADAL
     return $(LoadLibraries $false @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll") ([ref]$adalDllsLocation) )
 }
 
-function GetOAuthCredentials()
+function GetOAuthCredentials
 {
     # Obtain OAuth token for accessing mailbox
+    param (
+        [switch]$RenewToken
+    )
     $exchangeCredentials = $null
 
     if ( $(LoadADAL) -eq $false )
@@ -306,19 +309,70 @@ function GetOAuthCredentials()
         Exit
     }
 
-    $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Always)
+    $script:authenticationResult = $null
+    if ([String]::IsNullOrEmpty($OAuthTenantId))
+    {
+        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
+    }
+    else
+    {
+        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.microsoftonline.com/$OAuthTenantId", $False)
+    }
+    if ($RenewToken)
+    {
+        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Auto)
+    }
+    else
+    {
+        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::SelectAccount)
+    }
+
     $redirectUri = New-Object Uri($OAuthRedirectUri)
-    $authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
+    $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
 
     if ( !$authenticationResult.IsFaulted )
     {
-        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($authenticationResult.Result.AccessToken)
+        $script:oAuthToken = $authenticationResult.Result
+        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthToken.AccessToken)
         $Mailbox = $authenticationResult.Result.UserInfo.UniqueId
-        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId)"
+        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId), access token expires $($script:oAuthToken.ExpiresOn)"
+    }
+    else
+    {
+        ReportError "GetOAuthCredentials"
     }
 
     return $exchangeCredentials
+}
+
+function ApplyEWSOAuthCredentials
+{
+    # Apply EWS OAuth credentials to all our service objects
+
+    if ( $script:authenticationResult -eq $null ) { return }
+    if ( $script:services -eq $null ) { return }
+    if ( $script:services.Count -lt 1 ) { return }
+    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+
+    # The token has expired and needs refreshing
+    LogVerbose("OAuth access token invalid, attempting to renew")
+    $exchangeCredentials = GetOAuthCredentials -RenewToken
+    if ($exchangeCredentials -eq $null) { return }
+    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    { 
+        Log "OAuth Token renewal failed"
+        exit # We no longer have access to the mailbox, so we stop here
+    }
+
+    Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    if ($script:services.Count -gt 0)
+    {
+        foreach ($service in $script:services.Values)
+        {
+            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
+        }
+        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+    }
 }
 
 Function LoadEWSManagedAPI()
@@ -648,6 +702,7 @@ function ThrottledFolderBind()
 
     try
     {
+        ApplyEWSOAuthCredentials
         if ($propset -eq $null)
         {
             $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId)
@@ -669,6 +724,7 @@ function ThrottledFolderBind()
     {
         try
         {
+            ApplyEWSOAuthCredentials
             if ($propset -eq $null)
             {
                 $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId)
@@ -789,6 +845,7 @@ Function GetFolder()
 				$SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, $PathElements[$i])
 				
                 $FolderResults = $Null
+                ApplyEWSOAuthCredentials
                 try
                 {
 				    $FolderResults = $Folder.FindFolders($SearchFilter, $View)
@@ -799,6 +856,7 @@ Function GetFolder()
                 {
                     if (Throttled)
                     {
+                        ApplyEWSOAuthCredentials
                         try
                         {
 				            $FolderResults = $Folder.FindFolders($SearchFilter, $View)
@@ -826,6 +884,7 @@ Function GetFolder()
 					    $subfolder = New-Object Microsoft.Exchange.WebServices.Data.Folder($RootFolder.Service)
 					    $subfolder.DisplayName = $PathElements[$i]
                         $subfolder.FolderClass = $CreatedFolderType
+                        ApplyEWSOAuthCredentials
                         try
                         {
 					        $subfolder.Save($Folder.Id)
@@ -876,6 +935,7 @@ function ReadMailboxFolderHierarchy()
 
     while ($moreFolders)
     {
+        ApplyEWSOAuthCredentials
         $findResults = $script:service.FindFolders([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $folderView)
         $folderView.Offset += 1000
         $moreFolders = $findResults.MoreAvailable
@@ -907,6 +967,7 @@ function ConvertEntryId($entryId)
     LogVerbose "EntryId as string: $($id.UniqueId)"
     $id.Format = [Microsoft.Exchange.WebServices.Data.IdFormat]::HexEntryId
     $ewsId = $Null
+    ApplyEWSOAuthCredentials
     $ewsId = $script:service.ConvertId($id, [Microsoft.Exchange.WebServices.Data.IdFormat]::EwsId)
     LogVerbose "EWS Id: $($ewsId.UniqueId)"
     return $ewsId.UniqueId
@@ -948,6 +1009,7 @@ Function RecoverFromFolder()
         }
         else
         {
+            ApplyEWSOAuthCredentials
 		    $FindResults=$service.FindItems($Folder.Id, $View)
         }
 		
@@ -1123,6 +1185,7 @@ Function RecoverFromFolder()
                     if (!$WhatIf)
                     {
                         # Move the item
+                        ApplyEWSOAuthCredentials
                         try
                         {
                             if ($RestoreAsCopy)
