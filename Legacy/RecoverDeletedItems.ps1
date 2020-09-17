@@ -101,7 +101,7 @@ param (
 	[switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.1.6"
+$script:ScriptVersion = "1.1.7"
 
 # Define our functions
 
@@ -330,7 +330,7 @@ function GetOAuthCredentials
     $redirectUri = New-Object Uri($OAuthRedirectUri)
     $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
 
-    if ( !$authenticationResult.IsFaulted )
+    if ( !$script:authenticationResult.IsFaulted )
     {
         $script:oAuthToken = $authenticationResult.Result
         $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthToken.AccessToken)
@@ -365,14 +365,11 @@ function ApplyEWSOAuthCredentials
     }
 
     Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
-    if ($script:services.Count -gt 0)
+    foreach ($service in $script:services.Values)
     {
-        foreach ($service in $script:services.Values)
-        {
-            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
-        }
-        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+        $service.Credentials = $exchangeCredentials
     }
+    LogVerbose "Updated OAuth token for $($script:services.Count) ExchangeService objects"
 }
 
 Function LoadEWSManagedAPI()
