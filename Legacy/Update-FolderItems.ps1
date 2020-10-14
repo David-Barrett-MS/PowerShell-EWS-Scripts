@@ -41,6 +41,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as unread")]
     [switch]$MarkAsUnread,
 
+    [Parameter(Mandatory=$False,HelpMessage="Actions will only apply to contact objects that have the given SMTP address as their email address.  Supports multiple SMTP addresses passed as an array.")]
+    $MatchContactAddresses,
+
     [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted")]
     [switch]$DeleteContactPhoto,
     
@@ -93,7 +96,7 @@ param (
 	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.0"
+$script:ScriptVersion = "1.1.1"
 
 if ($ForceTLS12)
 {
@@ -1404,7 +1407,31 @@ Function ProcessFolder()
     } 	
 
     LogVerbose "Building list of items"
-    if (![String]::IsNullOrEmpty($SearchFilter))
+    if ($MatchContactAddresses)
+    {
+        $filters = @()
+        foreach ($contactAddress in $MatchContactAddresses)
+        {
+            LogVerbose "Adding SMTP address search: $smtpAddress"
+            $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress1, $contactAddress, 
+                [Microsoft.Exchange.WebServices.Data.ContainmentMode]::FullString, [Microsoft.Exchange.WebServices.Data.ComparisonMode]::IgnoreCase)
+            $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress2, $contactAddress, 
+                [Microsoft.Exchange.WebServices.Data.ContainmentMode]::FullString, [Microsoft.Exchange.WebServices.Data.ComparisonMode]::IgnoreCase)
+            $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress3, $contactAddress, 
+                [Microsoft.Exchange.WebServices.Data.ContainmentMode]::FullString, [Microsoft.Exchange.WebServices.Data.ComparisonMode]::IgnoreCase)
+
+        }
+        $SearchFilter = $Null
+        if ( $filters.Count -gt 0 )
+        {
+            $SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::Or)
+            foreach ($filter in $filters)
+            {
+                $SearchFilter.Add($filter)
+            }
+        }        
+    }
+    elseif (![String]::IsNullOrEmpty($SearchFilter))
     {
         LogVerbose "Search query being applied: $SearchFilter"
     }
@@ -1417,7 +1444,7 @@ Function ProcessFolder()
 
         try
         {
-            if (![String]::IsNullOrEmpty($SearchFilter))
+            if ($MatchContactAddresses -or ![String]::IsNullOrEmpty($SearchFilter))
             {
                 # We have a search filter, so need to apply this
                 $FindResults=$Folder.FindItems($SearchFilter, $View)
