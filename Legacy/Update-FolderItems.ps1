@@ -96,11 +96,15 @@ param (
 	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.1"
+$script:ScriptVersion = "1.1.2"
 
 if ($ForceTLS12)
 {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+}
+else
+{
+    Write-Host "If having connection/auth issues for Exchange Online or hybrid, you may need -ForceTLS12 switch" -ForegroundColor Yellow
 }
 
 # Define our functions
@@ -1524,13 +1528,13 @@ function ProcessMailbox()
     $script:throttlingDelay = 0
 
     # Bind to root folder
+    $mbx = New-Object Microsoft.Exchange.WebServices.Data.Mailbox( $Mailbox )
     if ($PublicFolders)
     {
-        $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::PublicFoldersRoot, $Mailbox )
+        $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::PublicFoldersRoot, $mbx )
     }
     else
     {
-        $mbx = New-Object Microsoft.Exchange.WebServices.Data.Mailbox( $Mailbox )
         if ($Archive)
         {
             $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveMsgFolderRoot, $mbx )
