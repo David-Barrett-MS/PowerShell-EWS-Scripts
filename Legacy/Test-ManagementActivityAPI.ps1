@@ -778,7 +778,7 @@ if ($List)
 #
 ########################################################
 
-if (![String]::IsNullOrEmpty($ContentType))
+if ([String]::IsNullOrEmpty($ContentType))
 {
     # If we don't have a ContentType specified, we default to Audit.General
     $ContentType = "Audit.General"
