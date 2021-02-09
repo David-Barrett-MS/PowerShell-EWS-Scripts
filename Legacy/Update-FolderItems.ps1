@@ -13,21 +13,21 @@
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
 param (
-	[Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
-	[ValidateNotNullOrEmpty()]
-	[string]$Mailbox,
+    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox will be accessed (instead of the main mailbox)")]
-	[switch]$Archive,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox will be accessed (instead of the main mailbox)")]
+    [switch]$Archive,
 		
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, folder path is required and the path points to a public folder")]
-	[switch]$PublicFolders,
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, folder path is required and the path points to a public folder")]
+    [switch]$PublicFolders,
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to search - if omitted, the mailbox message root folder is assumed.")]
-	$FolderPath,
+    [Parameter(Mandatory=$False,HelpMessage="Folder to search - if omitted, the mailbox message root folder is assumed.")]
+    $FolderPath,
 
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed")]
-	[switch]$ProcessSubfolders,
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed")]
+    [switch]$ProcessSubfolders,
 	
     [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the item(s) (must be supplied as hash table @{})")]
     $AddItemProperties,
@@ -50,50 +50,50 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s)")]
     [switch]$Delete,
     
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://msdn.microsoft.com/EN-US/library/dn579420(v=exchg.150).aspx)")]
-	[string]$SearchFilter,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://msdn.microsoft.com/EN-US/library/dn579420(v=exchg.150).aspx)")]
+    [string]$SearchFilter,
 
-	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credentials")]
     [System.Management.Automation.PSCredential]$Credential,
 				
-	[Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
-	[switch]$OAuth,
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
+    [switch]$OAuth,
 	
-	[Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-	[string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 	
-	[Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-	[string]$OAuthRedirectUri = "http://localhost/code",
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
+    [string]$OAuthRedirectUri = "http://localhost/code",
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
-	[switch]$Impersonate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
+    [switch]$Impersonate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
-	[string]$EwsUrl,
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
+    [string]$EwsUrl,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
-	[switch]$Office365,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
+    [switch]$Office365,
 	
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only TLS 1.2 connections will be negotiated")]
-	[switch]$ForceTLS12,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only TLS 1.2 connections will be negotiated")]
+    [switch]$ForceTLS12,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
-	[string]$EWSManagedApiPath = "",
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
+    [string]$EWSManagedApiPath = "",
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
-	[switch]$IgnoreSSLCertificate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
+    [switch]$IgnoreSSLCertificate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
-	[switch]$AllowInsecureRedirection,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
+    [switch]$AllowInsecureRedirection,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
+    [string]$LogFile = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
-	[string]$TraceFile,
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
+    [string]$TraceFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
 $script:ScriptVersion = "1.1.2"
