@@ -50,8 +50,14 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s)")]
     [switch]$Delete,
     
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://msdn.microsoft.com/EN-US/library/dn579420(v=exchg.150).aspx)")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange")]
     [string]$SearchFilter,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have values in the given properties will be updated.")]
+    $PropertiesMustExist,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary @{""propId"" = ""value""}")]
+    $PropertiesMustMatch,
 
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credentials")]
@@ -96,7 +102,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.2"
+$script:ScriptVersion = "1.1.3"
 
 if ($ForceTLS12)
 {
@@ -735,47 +741,6 @@ function CreateService($smtpAddress)
     return $exchangeService
 }
 
-Function EWSPropertyType($MAPIPropertyType)
-{
-    # Return the EWS property type for the given MAPI Property value
-
-    switch ([Convert]::ToInt32($MAPIPropertyType,16))
-    {
-        0x0    { return $Null }
-        0x1    { return $Null }
-        0x2    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Short }
-        0x1002 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ShortArray }
-        0x3    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Integer }
-        0x1003 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::IntegerArray }
-        0x4    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Float }
-        0x1004 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::FloatArray }
-        0x5    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Double }
-        0x1005 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::DoubleArray }
-        0x6    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Currency }
-        0x1006 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::CurrencyArray }
-        0x7    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ApplicationTime }
-        0x1007 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ApplicationTimeArray }
-        0x0A   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Error }
-        0x0B   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Boolean }
-        0x0D   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Object }
-        0x100D { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ObjectArray }
-        0x14   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Long }
-        0x1014 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::LongArray }
-        0x1E   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::String }
-        0x101E { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::StringArray }
-        0x1F   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::String }
-        0x101F { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::StringArray }
-        0x40   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime }
-        0x1040 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTimeArray }
-        0x48   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::CLSID }
-        0x1048 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::CLSIDArray }
-        0x102  { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary }
-        0x1102 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::BinaryArray }
-    }
-    Write-Verbose "Couldn't match MAPI property type"
-    return $Null
-}
-
 Function AddItemProperties($item)
 {
     # Add the specified properties to the item
@@ -832,92 +797,183 @@ Function AddItemProperties($item)
     return $False
 }
 
+Function EWSPropertyType($MAPIPropertyType)
+{
+    # Return the EWS property type for the given MAPI Property value
+
+    switch ([Convert]::ToInt32($MAPIPropertyType,16))
+    {
+        0x0    { return $Null }
+        0x1    { return $Null }
+        0x2    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Short }
+        0x1002 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ShortArray }
+        0x3    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Integer }
+        0x1003 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::IntegerArray }
+        0x4    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Float }
+        0x1004 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::FloatArray }
+        0x5    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Double }
+        0x1005 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::DoubleArray }
+        0x6    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Currency }
+        0x1006 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::CurrencyArray }
+        0x7    { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ApplicationTime }
+        0x1007 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ApplicationTimeArray }
+        0x0A   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Error }
+        0x0B   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Boolean }
+        0x0D   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Object }
+        0x100D { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::ObjectArray }
+        0x14   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Long }
+        0x1014 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::LongArray }
+        0x1E   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::String }
+        0x101E { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::StringArray }
+        0x1F   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::String }
+        0x101F { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::StringArray }
+        0x40   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime }
+        0x1040 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTimeArray }
+        0x48   { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::CLSID }
+        0x1048 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::CLSIDArray }
+        0x102  { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary }
+        0x1102 { return [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::BinaryArray }
+    }
+    Write-Verbose "Couldn't match MAPI property type"
+    return $Null
+}
+
+Function GenerateEWSProp($PropertyDefinition)
+{
+    # Parse the string representation of the property and return as ExtendedPropertyDefinition
+    $EWSPropDef = $null
+
+    if ($PropertyDefinition.Contains("/"))
+    {
+        # Property definition will be one of these:
+        # {GUID}/name/mapiType - named property
+        # {GUID]/id/mapiType   - MAPI property (shouldn't be used when accessing named properties)
+        # DefaultExtendedPropertySet/name/mapiType
+
+        $propElements = $PropDef -Split "/"
+        if ($propElements.Length -eq 2)
+        {
+            # We expect three elements, but if there are two it most likely means that the MAPI property Id includes the Mapi type
+            if ($propElements[1].Length -eq 8)
+            {
+                $propElements += $propElements[1].Substring(4)
+                $propElements[1] = [Convert]::ToInt32($propElements[1].Substring(0,4),16)
+            }
+        }
+
+        if ( $propElements[0].StartsWith("{") )
+        {
+            # GUID based property definition
+            try
+            {
+                $guid = New-Object Guid($propElements[0])
+                $propType = EWSPropertyType($propElements[2])
+                $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($guid, $propElements[1], $propType)
+            }
+            catch {}
+        }
+        else
+        {
+            # Test DefaultExtendedPropertySet definition
+            try
+            {
+                $propSet = [Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::$($propElements[0])
+                $propType = EWSPropertyType($propElements[2])
+                $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($propSet, $propElements[1], $propType)
+            }
+            catch {}
+        }
+    }
+    else
+    {
+        # Assume MAPI property
+        if ($PropertyDefinition.ToLower().StartsWith("0x"))
+        {
+            $PropertyDefinition = $PropertyDefinition.SubString(2)
+        }
+        try
+        {
+            $propId = [Convert]::ToInt32($PropertyDefinition.SubString(0,4),16)
+            $propType = EWSPropertyType($PropertyDefinition.SubString(5))
+            $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($propId, $propType)
+        }
+        catch {}
+    }
+
+    if ($propdef -ne $Null)
+    {
+        LogVerbose "Property $PropertyDefinition successfully parsed"
+    }
+    else
+    {
+        Log "Failed to parse $PropertyDefinition"
+    }
+    return $propdef
+}
+
+Function GenerateEWSPropList($PropertyDefinitions)
+{
+    # Convert the given property definitions into EWS definitions
+    $props = @()
+
+    foreach ($PropDef in $PropertyDefinitions)
+    {
+        $EWSPropDef = GenerateEWSProp($PropDef)
+        if ($EWSPropDef -ne $Null)
+        {
+            $props += $EWSPropDef
+        }
+        else
+        {
+            Log "Failed to parse (or convert) property $PropDef" Red
+        }
+    }
+    return $props
+}
+
+Function CreatePropLists()
+{
+    # Process each of the parameters that can contain properties and convert them to EWS property lists
+
+    if ($DeleteItemProperties)
+    {
+        Write-Verbose "Building list of properties to delete"
+        $script:deleteItemPropsEws = GenerateEWSPropList($DeleteItemProperties)
+    }
+
+    if ($PropertiesMustExist)
+    {
+        Write-Verbose "Building list of properties that must exist"
+        $script:propertiesMustExistEws = GenerateEWSPropList($PropertiesMustExist)
+    }
+
+    if ($PropertiesMustMatch)
+    {
+        Write-Verbose "Building list of properties that must match"
+        $props = @{}
+
+        foreach ($PropDef in $PropertiesMustMatch.Keys)
+        {
+            $EWSPropDef = GenerateEWSProp($PropDef)
+            if ($EWSPropDef -ne $Null)
+            {
+                $props.Add($EWSPropDef, $PropertiesMustMatch[$PropDef])
+            }
+
+        }
+        $script:propertiesMustMatchEws = $props
+    }
+}
+
 Function DeleteItemProperties($item)
 {
     # Delete the specified properties from the item
 
     # Ensure we have some properties to delete...
-    if ($DeleteItemProperties -eq $Null) { return }
-    
-    # We need to convert the properties to EWS extended properties
-    if ($script:deleteItemPropsEws -eq $Null)
+    if ( ($script:deleteItemPropsEws -eq $Null) -or ($item -eq $null) )
     {
-        Write-Verbose "Building list of properties to delete"
-        $script:deleteItemPropsEws = @()
-        foreach ($deleteProperty in $DeleteItemProperties)
-        {
-            $propdef = $null
-
-            if ($deleteProperty.Contains("/"))
-            {
-                # Property definition will be one of these:
-                # {GUID}/name/mapiType - named property
-                # {GUID]/id/mapiType   - MAPI property (shouldn't be used when accessing named properties)
-                # DefaultExtendedPropertySet/name/mapiType
-
-                $propElements = $deleteProperty -Split "/"
-                if ($propElements.Length -eq 2)
-                {
-                    # We expect three elements, but if there are two it most likely means that the MAPI property Id includes the Mapi type
-                    if ($propElements[1].Length -eq 8)
-                    {
-                        $propElements += $propElements[1].Substring(4)
-                        $propElements[1] = [Convert]::ToInt32($propElements[1].Substring(0,4),16)
-                    }
-                }
-
-                if ( $propElements[0].StartsWith("{") )
-                {
-                    # GUID based property definition
-                    try
-                    {
-                        $guid = New-Object Guid($propElements[0])
-                        $propType = EWSPropertyType($propElements[2])
-                        $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($guid, $propElements[1], $propType)
-                    }
-                    catch {}
-                }
-                else
-                {
-                    # Test DefaultExtendedPropertySet definition
-                    try
-                    {
-                        $propSet = [Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::$($propElements[0])
-                        $propType = EWSPropertyType($propElements[2])
-                        $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($propSet, $propElements[1], $propType)
-                    }
-                    catch {}
-                }
-            }
-            else
-            {
-                # Assume MAPI property
-                if ($deleteProperty.ToLower().StartsWith("0x"))
-                {
-                    $deleteProperty = $deleteProperty.SubString(2)
-                }
-                try
-                {
-                    $propId = [Convert]::ToInt32($deleteProperty.SubString(0,4),16)
-                    $propType = EWSPropertyType($deleteProperty.SubString(5))
-                    $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($propId, $propType)
-                }
-                catch {}
-            }
-
-            if ($propdef -ne $Null)
-            {
-                $script:deleteItemPropsEws += $propdef
-                Write-Verbose "Property $deleteProperty added to delete list"
-            }
-            else
-            {
-                Log "Failed to parse (or convert) property $deleteProperty" Red
-            }
-        }
+        return
     }
-
-    if ($item -eq $null) { return }
 
     $propDeleted = $False
     # Delete the properties from the item
@@ -1169,6 +1225,95 @@ function MarkWhetherRead($item)
     return $false
 }
 
+function ItemHasRequiredProperties($item)
+{
+    # Check that this item matches any property requirements
+    if ($script:propertiesMustExistEws -ne $null)
+    {
+        foreach ($requiredProperty in $script:propertiesMustExistEws)
+        {
+            # Check the item has this property
+            $propExists = $false
+            if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
+            {
+                foreach ($itemProperty in $item.ExtendedProperties)
+                {
+                    if ($requiredProperty.PropertySetId -eq $itemProperty.PropertyDefinition.PropertySetId)
+                    {
+                        # Same property set, check the value
+                        if (![String]::IsNullOrEmpty(($requiredProperty.Id)))
+                        {
+                            if ($requiredProperty.Id -eq $itemProperty.PropertyDefinition.Id)
+                            {
+                                $propExists = $true
+                                break
+                            }
+                        }
+                        elseif (![String]::IsNullOrEmpty(($requiredProperty.Name)))
+                        {
+                            if ($requiredProperty.Name -eq $itemProperty.PropertyDefinition.Name)
+                            {
+                                $propExists = $true
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            if (!$propExists)
+            {
+                Write-Verbose "$requiredProperty does not exist, ignoring item"
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
+function ItemPropertiesMatchRequirements($item)
+{
+    if ($script:propertiesMustMatchEws -ne $null)
+    {
+        foreach ($requiredProperty in $script:propertiesMustMatchEws.Keys)
+        {
+            # Check the item has this property
+            $propMatches = $false
+            if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
+            {
+                foreach ($itemProperty in $item.ExtendedProperties)
+                {
+                    if ($requiredProperty.PropertySetId -eq $itemProperty.PropertyDefinition.PropertySetId)
+                    {
+                        # Same property set, check the value
+                        if (![String]::IsNullOrEmpty(($requiredProperty.Id)))
+                        {
+                            if ($requiredProperty.Id -eq $itemProperty.PropertyDefinition.Id)
+                            {
+                                $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                                break
+                            }
+                        }
+                        elseif (![String]::IsNullOrEmpty(($requiredProperty.Name)))
+                        {
+                            if ($requiredProperty.Name -eq $itemProperty.PropertyDefinition.Name)
+                            {
+                                $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            if (!$propMatches)
+            {
+                Write-Verbose "$requiredProperty does not match, ignoring item"
+                return $false
+            }
+        }
+    }
+    return $true    
+}
+
 Function ProcessItem()
 {
 	# Apply updates to the given item
@@ -1178,7 +1323,9 @@ Function ProcessItem()
 	{
 		throw "No item specified"
 	}
-	
+    
+    if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
+
     LogVerbose "Processing item: $($item.Subject)"
 
     # Check for delete first of all
@@ -1408,7 +1555,21 @@ Function ProcessFolder()
         {
             $propSet.Add($deleteProperty)
         }
-    } 	
+    }
+    if ($script:propertiesMustExistEws -ne $null) # We retrieve any properties that must exist
+    {
+        foreach ($requiredProperty in $script:propertiesMustExistEws)
+        {
+            $propSet.Add($requiredProperty)
+        }
+    }
+    if ($script:propertiesMustMatchEws -ne $null) # We retrieve any properties that we need to check the value of
+    {
+        foreach ($propMustMatch in $script:propertiesMustMatchEws.Keys)
+        {
+            $propSet.Add($propMustMatch)
+        }
+    }
 
     LogVerbose "Building list of items"
     if ($MatchContactAddresses)
@@ -1646,6 +1807,7 @@ if (!(LoadEWSManagedAPI))
   
 
 Write-Host ""
+CreatePropLists
 
 # Check whether we have a CSV file as input...
 If ( $(Test-Path $Mailbox) )
