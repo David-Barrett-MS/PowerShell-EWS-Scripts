@@ -17,21 +17,21 @@
 # 2. Add Azure application registration functionality
 
 param (
-	[Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the source mailbox (from which items will be moved/copied)")]
-	[ValidateNotNullOrEmpty()]
-	[string]$SourceMailbox,
+    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the source mailbox (from which items will be moved/copied)")]
+    [ValidateNotNullOrEmpty()]
+    [string]$SourceMailbox,
 
-	[Parameter(Position=1,Mandatory=$False,HelpMessage="Specifies the target mailbox (if not specified, the source mailbox is also the target)")]
-	[ValidateNotNullOrEmpty()]
-	[string]$TargetMailbox,
+    [Parameter(Position=1,Mandatory=$False,HelpMessage="Specifies the target mailbox (if not specified, the source mailbox is also the target)")]
+    [ValidateNotNullOrEmpty()]
+    [string]$TargetMailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, the source is Public Folders (not a mailbox)")]
-	[ValidateNotNullOrEmpty()]
-	[switch]$SourcePublicFolders,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, the source is Public Folders (not a mailbox)")]
+    [ValidateNotNullOrEmpty()]
+    [switch]$SourcePublicFolders,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, the target is Public Folders (not a mailbox)")]
-	[ValidateNotNullOrEmpty()]
-	[switch]$TargetPublicFolders,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, the target is Public Folders (not a mailbox)")]
+    [ValidateNotNullOrEmpty()]
+    [switch]$TargetPublicFolders,
 
     [Parameter(Mandatory=$False,HelpMessage="Specifies the folder(s) to be merged")]
     [ValidateNotNullOrEmpty()]
@@ -41,9 +41,9 @@ param (
     [ValidateNotNullOrEmpty()]
     $ExcludeFolderList,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, the folder paths are relative to the mailbox root.  If not specified, they are assumed to be relative to message folder root (i.e. Top of Information Store)")]
-	[ValidateNotNullOrEmpty()]
-	[switch]$PathsRelativeToMailboxRoot,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, the folder paths are relative to the mailbox root.  If not specified, they are assumed to be relative to message folder root (i.e. Top of Information Store)")]
+    [ValidateNotNullOrEmpty()]
+    [switch]$PathsRelativeToMailboxRoot,
 
     [Parameter(Mandatory=$False,HelpMessage="A list of message classes to be excluded from processing")]
     $ExcludedMessageClasses,
@@ -51,111 +51,111 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="A list of message classes to be processed.  Any that don't match will be ignored.")]
     $IncludedMessageClasses,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be moved `r`n(see https://msdn.microsoft.com/EN-US/library/dn579420(v=exchg.150).aspx)")]
-	[string]$SearchFilter,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be moved `r`n(see https://msdn.microsoft.com/EN-US/library/dn579420(v=exchg.150).aspx)")]
+    [string]$SearchFilter,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
-	[DateTime]$OnlyItemsCreatedBefore,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
+    [DateTime]$OnlyItemsCreatedBefore,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent of received before the specified date will be processed (useful for archiving).")]
-	[DateTime]$OnlyItemsSentReceivedBefore,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent of received before the specified date will be processed (useful for archiving).")]
+    [DateTime]$OnlyItemsSentReceivedBefore,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
-	[DateTime]$OnlyItemsCreatedAfter,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
+    [DateTime]$OnlyItemsCreatedAfter,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent of received before the specified date will be processed (useful for archiving).")]
-	[DateTime]$OnlyItemsSentReceivedAfter,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent of received before the specified date will be processed (useful for archiving).")]
+    [DateTime]$OnlyItemsSentReceivedAfter,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the folders in MergeFolderList are identified by EwsId (not path)")]
-	[switch]$ByFolderId,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the folders in MergeFolderList are identified by EwsId (not path)")]
+    [switch]$ByFolderId,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the folders in MergeFolderList are identified by EntryId (not path)")]
-	[switch]$ByEntryId,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the folders in MergeFolderList are identified by EntryId (not path)")]
+    [switch]$ByEntryId,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, subfolders will also be processed")]
-	[switch]$ProcessSubfolders,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, subfolders will also be processed")]
+    [switch]$ProcessSubfolders,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, all items in subfolders of source will be moved to specified target folder (hierarchy will NOT be maintained)")]
+    [Parameter(Mandatory=$False,HelpMessage="When specified, all items in subfolders of source will be moved to specified target folder (hierarchy will NOT be maintained)")]
     [alias("MergeSubfolders")]
-	[switch]$CombineSubfolders,
+    [switch]$CombineSubfolders,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, if the target folder doesn't exist, then it will be created (if possible)")]
-	[switch]$CreateTargetFolder,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, if the target folder doesn't exist, then it will be created (if possible)")]
+    [switch]$CreateTargetFolder,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the source mailbox being accessed will be the archive mailbox")]
-	[switch]$SourceArchive,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the source mailbox being accessed will be the archive mailbox")]
+    [switch]$SourceArchive,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the target mailbox being accessed will be the archive mailbox")]
-	[switch]$TargetArchive,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the target mailbox being accessed will be the archive mailbox")]
+    [switch]$TargetArchive,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, hidden (associated) items of the folder are processed (normal items are ignored)")]
-	[switch]$AssociatedItems,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, hidden (associated) items of the folder are processed (normal items are ignored)")]
+    [switch]$AssociatedItems,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the source folder will be deleted after the move (can't be used with -Copy)")]
-	[switch]$Delete,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the source folder will be deleted after the move (can't be used with -Copy)")]
+    [switch]$Delete,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, items are copied rather than moved (can't be used with -Delete)")]
-	[switch]$Copy,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, items are copied rather than moved (can't be used with -Delete)")]
+    [switch]$Copy,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, no moves will be performed (but actions that would be taken will be logged)")]
-	[switch]$WhatIf,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, no moves will be performed (but actions that would be taken will be logged)")]
+    [switch]$WhatIf,
 
-	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
-	[switch]$OAuth,
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
+    [switch]$OAuth,
 
-	[Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-	[string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 
-	[Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
-	[string]$OAuthTenantId = "",
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
+    [string]$OAuthTenantId = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-	[string]$OAuthRedirectUri = "http://localhost/code",
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
+    [string]$OAuthRedirectUri = "http://localhost/code",
 
-	[Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
-	[switch]$Impersonate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
+    [switch]$Impersonate,
 
-	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, and -Office365 not specified, then autodiscover is used)")]
-	[string]$EwsUrl,
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, and -Office365 not specified, then autodiscover is used)")]
+    [string]$EwsUrl,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
-	[switch]$Office365,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
+    [switch]$Office365,
 
-	[Parameter(Mandatory=$False,HelpMessage="By default, script will specify Exchange 2010 (to work with 2010 and higher).  If using 2007, this switch must be specified.")]
-	[switch]$Exchange2007,
+    [Parameter(Mandatory=$False,HelpMessage="By default, script will specify Exchange 2010 (to work with 2010 and higher).  If using 2007, this switch must be specified.")]
+    [switch]$Exchange2007,
 
-	[Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]
-	[string]$EWSManagedApiPath = "",
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]
+    [string]$EWSManagedApiPath = "",
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]
-	[switch]$IgnoreSSLCertificate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]
+    [switch]$IgnoreSSLCertificate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]
-	[switch]$AllowInsecureRedirection,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]
+    [switch]$AllowInsecureRedirection,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]
+    [string]$LogFile = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
-	[switch]$VerboseLogFile,
+    [Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
+    [switch]$VerboseLogFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
-	[switch]$DebugLogFile,
+    [Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
+    [switch]$DebugLogFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
-	[switch]$FastFileLogging,
+    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
+    [switch]$FastFileLogging,
 
-	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]
-	[string]$TraceFile,
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]
+    [string]$TraceFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
-	[int]$BatchSize = 100
+    [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
+    [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.1.9"
+$script:ScriptVersion = "1.2.0"
 
 # Define our functions
 
@@ -1152,10 +1152,21 @@ Function IsFolderExcluded()
         LogVerbose "Checking for exclusions: $($ExcludeFolderList -join ',')"
         ForEach ($excludedFolder in $ExcludeFolderList)
         {
-            if ($folderPath.ToLower().Equals($excludedFolder.ToLower()))
+            LogDebug "[IsFolderExcluded]Comparing $($folderPath.ToLower()) to $($excludedFolder.ToLower())"
+            if ($folderPath.ToLower().EndsWith($excludedFolder.ToLower()))
             {
-                Log "[IsFolderExcluded]Excluded folder being skipped: $folderPath"
-                return $true
+                # This could be a match
+                $pathsMatch = $true
+                if ($folderPath.Length -gt $excludedFolder.Length)
+                {
+                    $pathPrefix = $folderPath.SubString(0, $folderPath.Length-$excludedFolder.Length).ToLower()
+                    if ( ($pathPrefix -ne "\top of information store") -and ($pathPrefix -ne "\top of information store\"))  { $pathsMatch = $false }
+                }
+                if ($pathsMatch)
+                {
+                    Log "[IsFolderExcluded]Excluded folder being skipped: $folderPath"
+                    return $true
+                }
             }
         }
     }
