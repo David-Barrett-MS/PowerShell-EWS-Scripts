@@ -102,7 +102,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.3"
+$script:ScriptVersion = "1.1.4"
 
 if ($ForceTLS12)
 {
@@ -950,18 +950,17 @@ Function CreatePropLists()
     if ($PropertiesMustMatch)
     {
         Write-Verbose "Building list of properties that must match"
-        $props = @{}
+        $script:propertiesMustMatchEws = @{}
 
         foreach ($PropDef in $PropertiesMustMatch.Keys)
         {
             $EWSPropDef = GenerateEWSProp($PropDef)
             if ($EWSPropDef -ne $Null)
             {
-                $props.Add($EWSPropDef, $PropertiesMustMatch[$PropDef])
+                $script:propertiesMustMatchEws.Add($EWSPropDef, $PropertiesMustMatch[$PropDef])
             }
 
         }
-        $script:propertiesMustMatchEws = $props
     }
 }
 
@@ -1278,9 +1277,10 @@ function ItemPropertiesMatchRequirements($item)
         {
             # Check the item has this property
             $propMatches = $false
-            if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
+
+            foreach ($itemProperty in $item.ExtendedProperties)
             {
-                foreach ($itemProperty in $item.ExtendedProperties)
+                if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
                 {
                     if ($requiredProperty.PropertySetId -eq $itemProperty.PropertyDefinition.PropertySetId)
                     {
@@ -1303,7 +1303,13 @@ function ItemPropertiesMatchRequirements($item)
                         }
                     }
                 }
+                elseif ($requiredProperty.Tag -ne $null -and $requiredProperty.Tag -eq $itemProperty.PropertyDefinition.Tag)
+                {
+                    $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                    break
+                }
             }
+
             if (!$propMatches)
             {
                 Write-Verbose "$requiredProperty does not match, ignoring item"
@@ -1496,6 +1502,44 @@ Function ThrottledBatchDelete()
     Write-Progress -Activity $progressActivity -Status "Complete" -Completed
 }
 
+Function InitialiseItemPropertySet()
+{
+    if ($script:RequiredPropSet -ne $null)
+    {
+        return $script:RequiredPropSet
+    }
+    $script:RequiredPropSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,[Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject,
+        [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsRead,[Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,[Microsoft.Exchange.WebServices.Data.ContactSchema]::HasPicture)
+
+    if ($script:deleteItemPropsEws -ne $null) # We retrieve any properties that we want to delete
+    {
+        foreach ($deleteProperty in $script:deleteItemPropsEws)
+        {
+            $script:RequiredPropSet.Add($deleteProperty)
+        }
+    }
+    if ($script:propertiesMustExistEws -ne $null) # We retrieve any properties that must exist
+    {
+        foreach ($requiredProperty in $script:propertiesMustExistEws)
+        {
+            if (-not ($script:RequiredPropSet.Contains($requiredProperty)) )
+            {
+                $script:RequiredPropSet.Add($requiredProperty)
+            }
+        }
+    }
+    if ($script:propertiesMustMatchEws -ne $null) # We retrieve any properties that we need to check the value of
+    {
+        foreach ($propMustMatch in $script:propertiesMustMatchEws.Keys)
+        {
+            LogVerbose "[InitialiseItemPropertySet] $propMustMatch"
+            if (-not ($script:RequiredPropSet.Contains($propMustMatch)) )
+            {
+                $script:RequiredPropSet.Add($propMustMatch)
+            }
+        }
+    }
+}
 
 Function ProcessFolder()
 {
@@ -1547,30 +1591,6 @@ Function ProcessFolder()
     $script:itemsToDelete = New-Object System.Collections.ArrayList # Any items to delete we process in batch (we can't easily do this for updates)
     $i = 0
 
-    $propSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,[Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject,
-        [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsRead,[Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,[Microsoft.Exchange.WebServices.Data.ContactSchema]::HasPicture)
-    if ($script:deleteItemPropsEws -ne $null) # We retrieve any properties that we want to delete
-    {
-        foreach ($deleteProperty in $script:deleteItemPropsEws)
-        {
-            $propSet.Add($deleteProperty)
-        }
-    }
-    if ($script:propertiesMustExistEws -ne $null) # We retrieve any properties that must exist
-    {
-        foreach ($requiredProperty in $script:propertiesMustExistEws)
-        {
-            $propSet.Add($requiredProperty)
-        }
-    }
-    if ($script:propertiesMustMatchEws -ne $null) # We retrieve any properties that we need to check the value of
-    {
-        foreach ($propMustMatch in $script:propertiesMustMatchEws.Keys)
-        {
-            $propSet.Add($propMustMatch)
-        }
-    }
-
     LogVerbose "Building list of items"
     if ($MatchContactAddresses)
     {
@@ -1605,7 +1625,7 @@ Function ProcessFolder()
 	while ($MoreItems)
 	{
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView($PageSize, $Offset, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
-		$View.PropertySet = $propSet
+		$View.PropertySet = $script:RequiredPropSet
 
         try
         {
@@ -1675,9 +1695,6 @@ Function ProcessFolder()
 function ProcessMailbox()
 {
     # Process the mailbox
-
-    # Parse any properties that we want to delete - this is because we need to retrieve them first
-    DeleteItemProperties $null
 
     Write-Host ([string]::Format("Processing mailbox {0}", $Mailbox)) -ForegroundColor Gray
 	$script:service = CreateService($Mailbox)
@@ -1803,11 +1820,11 @@ if (!(LoadEWSManagedAPI))
     Write-Host "Use the latest version available"
 	Exit
 }
-
   
 
 Write-Host ""
 CreatePropLists
+InitialiseItemPropertySet
 
 # Check whether we have a CSV file as input...
 If ( $(Test-Path $Mailbox) )
