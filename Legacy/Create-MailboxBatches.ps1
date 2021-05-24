@@ -15,7 +15,8 @@
 
 param (
 	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with Exchange (PowerShell)")]
-    [System.Management.Automation.PSCredential]$Credentials,
+    [alias("Credentials")]
+    [System.Management.Automation.PSCredential]$Credential,
 				
 	[Parameter(Mandatory=$False,HelpMessage="PowerShell Url (default is Office 365 Url: https://ps.outlook.com/powershell/)")]
     [String]$PowerShellUrl = "https://ps.outlook.com/powershell/",
