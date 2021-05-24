@@ -1,7 +1,7 @@
 #
 # Create-MailboxBatches.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2016-2021. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
@@ -29,7 +29,7 @@ param (
     [Parameter(Mandatory=$True,HelpMessage="Where the mailbox batch files will be created")]	
 	[String]$ExportBatchPath,
 
-    [Parameter(Mandatory=$False,HelpMessage="Where the mailbox batch files will be created")]	
+    [Parameter(Mandatory=$False,HelpMessage="Maximum number of mailboxes per batch")]	
 	[int]$BatchSize = 25
 )
 
