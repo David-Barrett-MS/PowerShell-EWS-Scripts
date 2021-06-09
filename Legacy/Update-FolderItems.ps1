@@ -59,6 +59,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary @{""propId"" = ""value""}")]
     $PropertiesMustMatch,
 
+    [Parameter(Mandatory=$False,HelpMessage="Any matching items will have Id and Subject written to log/console")]
+    [switch]$ListMatches,
+
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credentials")]
     [System.Management.Automation.PSCredential]$Credential,
@@ -99,10 +102,10 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
     [string]$TraceFile,
 
-    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will actually be deleted (but any processing that would occur will be logged)")]	
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.4"
+$script:ScriptVersion = "1.1.5"
 
 if ($ForceTLS12)
 {
@@ -886,7 +889,7 @@ Function GenerateEWSProp($PropertyDefinition)
     }
     else
     {
-        # Assume MAPI property
+        # Assume MAPI property (e.g. 0x00360003)
         if ($PropertyDefinition.ToLower().StartsWith("0x"))
         {
             $PropertyDefinition = $PropertyDefinition.SubString(2)
@@ -1235,6 +1238,7 @@ function ItemHasRequiredProperties($item)
             $propExists = $false
             if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
             {
+                LogDebug "Checking for $($requiredProperty.PropertySetId)"
                 foreach ($itemProperty in $item.ExtendedProperties)
                 {
                     if ($requiredProperty.PropertySetId -eq $itemProperty.PropertyDefinition.PropertySetId)
@@ -1258,6 +1262,18 @@ function ItemHasRequiredProperties($item)
                         }
                     }
                 }
+            }
+            elseif ($requiredProperty.Tag -ne $null)
+            {
+                LogDebug "Checking for $($requiredProperty.Tag)"
+                foreach ($itemProperty in $item.ExtendedProperties)
+                {
+                    if ($requiredProperty.Tag -eq $itemProperty.PropertyDefinition.Tag)
+                    {
+                        $propExists = $true
+                        break
+                    }
+                }               
             }
             if (!$propExists)
             {
@@ -1305,6 +1321,7 @@ function ItemPropertiesMatchRequirements($item)
                 }
                 elseif ($requiredProperty.Tag -ne $null -and $requiredProperty.Tag -eq $itemProperty.PropertyDefinition.Tag)
                 {
+                    # Check MAPI extended property
                     $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
                     break
                 }
@@ -1333,6 +1350,12 @@ Function ProcessItem()
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
 
     LogVerbose "Processing item: $($item.Subject)"
+    $script:itemsMatched++
+    if ($ListMatches)
+    {
+        $item
+        #Log "$($item.Id.UniqueId) : $($item.Subject)"
+    }
 
     # Check for delete first of all
     if ($Delete)
@@ -1346,7 +1369,7 @@ Function ProcessItem()
         {
             Log "$($item.Subject) would be deleted" Gray
         }
-        $script:itemsAffected++
+        $script:itemsDeleted++
         return # If Delete is specified, any other parameter is irrelevant
     }
 
@@ -1744,6 +1767,8 @@ function ProcessMailbox()
     }
 
     $script:itemsAffected = 0
+    $script:itemsDeleted = 0
+    $script:itemsMatched = 0
 
     # FolderPath can support arrays (list of folders)
     if ([String]::IsNullOrEmpty($FolderPath))
@@ -1779,11 +1804,15 @@ function ProcessMailbox()
     }
     if ($WhatIf)
     {
-        Log "$($Mailbox): $($script:itemsAffected) item(s) would be affected (but -WhatIf was specified so no action was taken)"
+        Log "$($Mailbox): $($script:itemsMatched) item(s) matched specified criteria"
+        Log "$($Mailbox): $($script:itemsAffected) item(s) would be changed (but -WhatIf was specified so no action was taken)"
+        Log "$($Mailbox): $($script:itemsDeleted) item(s) would be deleted (but -WhatIf was specified so no action was taken)"
     }
     else
     {
-        Log "$($Mailbox): $($script:itemsAffected) item(s) affected"
+        Log "$($Mailbox): $($script:itemsMatched) item(s) matched specified criteria"
+        Log "$($Mailbox): $($script:itemsAffected) item(s) were changed"
+        Log "$($Mailbox): $($script:itemsDeleted) item(s) were deleted"
     }
 }
 
