@@ -1,16 +1,16 @@
  
 # Test-ManagementActivityAPI.ps1
 #
-# By David Barrett, Microsoft Ltd. 2018-2019. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2018-2021. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
-# THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-# MICROSOFT FURTHER DISCLAIMS ALL IMPLIED WARRANTIES INCLUDING WITHOUT LIMITATION ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR OF FITNESS FOR
-# A PARTICULAR PURPOSE. THE ENTIRE RISK ARISING OUT OF THE USE OR PERFORMANCE OF THE SAMPLES REMAINS WITH YOU. IN NO EVENT SHALL
-# MICROSOFT OR ITS SUPPLIERS BE LIABLE FOR ANY DAMAGES WHATSOEVER (INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS,
-# BUSINESS INTERRUPTION, LOSS OF BUSINESS INFORMATION, OR OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF OR INABILITY TO USE THE
-# SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
-# OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
+# THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
 
 <#
 .SYNOPSIS
@@ -43,29 +43,29 @@ If you know your tenant Id, or want to specify the tenant (in case the Azure reg
 #>
 
 param (
-	[Parameter(Mandatory=$False,HelpMessage="Application Id (obtained when registering the application in Azure AD")]
-	[ValidateNotNullOrEmpty()]
-	[string]$AppId = "",
+    [Parameter(Mandatory=$False,HelpMessage="Application Id (obtained when registering the application in Azure AD")]
+    [ValidateNotNullOrEmpty()]
+    [string]$AppId = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Application secret key (obtained when registering the application in Azure AD")]
-	[ValidateNotNullOrEmpty()]
-	[string]$AppSecretKey = "",
+    [Parameter(Mandatory=$False,HelpMessage="Application secret key (obtained when registering the application in Azure AD)")]
+    [ValidateNotNullOrEmpty()]
+    [string]$AppSecretKey = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Authentication certificate (needs the private key as this is used to identify the application as registered in Azure)")]
-	[ValidateNotNullOrEmpty()]
-	[string]$AppAuthCertificate = "",
+    [Parameter(Mandatory=$False,HelpMessage="Authentication certificate (certificate must include the private key as this is used to identify the application as registered in Azure)")]
+    [ValidateNotNullOrEmpty()]
+    [string]$AppAuthCertificate = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Redirect URI for the application")]
-	[ValidateNotNullOrEmpty()]
-	[string]$AppRedirectURI = "http://localhost/TestManagementActivityAPI",
+    [Parameter(Mandatory=$False,HelpMessage="Redirect URI for the application")]
+    [ValidateNotNullOrEmpty()]
+    [string]$AppRedirectURI = "http://localhost/TestManagementActivityAPI",
 
-	[Parameter(Mandatory=$False,HelpMessage="Tenant Id")]
-	[ValidateNotNullOrEmpty()]
-	[string]$TenantId = "",
+    [Parameter(Mandatory=$False,HelpMessage="Tenant Id")]
+    [ValidateNotNullOrEmpty()]
+    [string]$TenantId = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Publisher Id (this is the tenant Id of the publisher - if specified, the publisher's quota will be used)")]
-	[ValidateNotNullOrEmpty()]
-	[string]$PublisherId = "",
+    [Parameter(Mandatory=$False,HelpMessage="Publisher Id (this is the tenant Id of the publisher - if specified, the publisher's quota will be used)")]
+    [ValidateNotNullOrEmpty()]
+    [string]$PublisherId = "",
 
     [Parameter(Mandatory=$False,HelpMessage="Start subscription.  If ContentType not specified, will attempt to enable all.")]
     [switch]$Start,
@@ -73,9 +73,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Webhook address (URL to which audit logs will be sent).  Note that webhooks are no longer recommended.")]
     [string]$WebhookAddress = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Which audit logs do we want to retrieve?  Default is general audit logs.  Can be left blank when starting subscriptions to enable collection of all types.")]
-	[ValidateNotNullOrEmpty()]
-	[string]$ContentType = "",
+    [Parameter(Mandatory=$False,HelpMessage="Which audit logs do we want to retrieve?  Default is general audit logs.  Can be left blank when starting subscriptions to enable collection of all types.")]
+    [ValidateNotNullOrEmpty()]
+    [string]$ContentType = "",
 
     [Parameter(Mandatory=$False,HelpMessage="Stop subscription")]
     [switch]$Stop,
@@ -99,20 +99,20 @@ param (
     [switch]$RegisterAzureApplication,
 
     [Parameter(Mandatory=$False,HelpMessage="Name of the application to register in Azure (required when -RegisterAzureApplication specified)")]
-	[ValidateNotNullOrEmpty()]
+    [ValidateNotNullOrEmpty()]
     [string]$AzureApplicationName = "",
 
     [Parameter(Mandatory=$False,HelpMessage="Permissions that the application will require (these are all application permissions as this script authenticates as application)")]
-	[ValidateNotNullOrEmpty()]
-    $AzureApplicationRequiredPermissions = @("ActivityReports.Read", "ThreatIntelligence.Read", "ActivityFeed.ReadDlp", "ActivityFeed.Read", "ServiceHealth.Read"),
+    [ValidateNotNullOrEmpty()]
+    $AzureApplicationRequiredPermissions = @("ActivityFeed.Read", "ActivityFeed.ReadDlp", "ServiceHealth.Read"),
 
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file")]	
+    [string]$LogFile = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
-	[string]$DebugPath = ""
+    [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
+    [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.0.7"
+$script:ScriptVersion = "1.0.8"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -296,9 +296,6 @@ function GetAccessToken
         $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://manage.office.com", $clientCredential)
 
     }
-    #$global:OAuthToken = $authenticationResult  # For troubleshooting
-    #$authenticationResult | fl
-    #exit
         
     if (!$script:authenticationResult.IsCompleted)
     {
@@ -332,19 +329,19 @@ function GetAccessToken
     }
     LogVerbose "OAuth log-on completed successfully"
     LogVerbose "Access token acquired: $($script:authenticationResult.Result.AccessToken)"
-    Log "Access token expires at: $($script:authenticationResult.Result.ExpiresOn.DateTime)" Green
+    Log "Access token expires at (UTC): $($script:authenticationResult.Result.ExpiresOn.DateTime)" Green
     return $script:authenticationResult.Result.AccessToken
 }
 
 function GetValidAccessToken
 {
     # Check if access token needs renewing, and if so renew it.  We renew only if token has expired (before this, ADAL will simply return the same one)
-    if ( $script:authenticationResult.Result.ExpiresOn.DateTime -ge [DateTime]::Now ) { return $script:accessToken }
+    if ( $script:authenticationResult.Result.ExpiresOn.DateTime -ge [DateTime]::UtcNow ) { return $script:accessToken }
 
     # Access token has expired, so we need to renew it
     Log("OAuth access token has expired, attempting to renew")
     $script:accessToken = GetAccessToken
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::UtcNow )
     {
         Log "Failed to renew access token" Red
         exit
