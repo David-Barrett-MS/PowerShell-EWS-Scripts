@@ -1,7 +1,7 @@
 #
 # Update-Folders.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2016-2021. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
@@ -13,18 +13,18 @@
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
 param (
-	[Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
-	[ValidateNotNullOrEmpty()]
-	[string]$Mailbox,
+    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, public folders will be processed")]
-	[switch]$PublicFolders,
-
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox is accessed (instead of the main mailbox)")]
-	[switch]$Archive,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox is accessed (instead of the main mailbox)")]
+    [switch]$Archive,
 		
-	[Parameter(Mandatory=$False,HelpMessage="If specified, folder or list of folders to process.  If omitted, root message folder is assumed.")]
-	$FolderPaths = "",
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, public folders will be processed")]
+    [switch]$PublicFolders,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, folder or list of folders to process.  If omitted, root message folder is assumed.")]
+    $FolderPaths = "",
 
     [Parameter(Mandatory=$False,HelpMessage="Specifies the folder(s) to be excluded")]
     [ValidateNotNullOrEmpty()]
@@ -50,14 +50,26 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, any folders that do not have an item class defined (i.e. it is empty) will have the item class set.  If -FolderClass is specified, all blank folder are set to that - otherwise, the class is set to the same as the parent folder.")]
     [switch]$RepairFolderClass,
     
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed")]
-	[switch]$ProcessSubfolders,
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed")]
+    [switch]$ProcessSubfolders,
 	
     [Parameter(Mandatory=$False,HelpMessage="Adds the given properties (must be supplied as hash table @{}) to the folder(s)")]
     $AddFolderProperties,
     
     [Parameter(Mandatory=$False,HelpMessage="Deletes the given properties from the folder(s)")]
     $DeleteFolderProperties,
+
+    [Parameter(Mandatory=$False,HelpMessage="Only processes folders created after this date")]
+    [datetime]$CreatedAfter,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Only processes folders created after this date")]
+    [datetime]$CreatedBefore,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only folders that have values in the given properties will be updated.")]
+    $PropertiesMustExist,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only folders that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary @{""propId"" = ""value""}")]
+    $PropertiesMustMatch,
     
     [Parameter(Mandatory=$False,HelpMessage="Deletes the folder(s)")]
     [switch]$Delete,
@@ -71,43 +83,43 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [System.Management.Automation.PSCredential]$Credentials,
 	
-	[Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
-	[switch]$OAuth,
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
+    [switch]$OAuth,
 	
-	[Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-	[string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 	
-	[Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-	[string]$OAuthRedirectUri = "http://localhost/code",
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
+    [string]$OAuthRedirectUri = "http://localhost/code",
 
-	[Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
-	[switch]$Impersonate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
+    [switch]$Impersonate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
-	[string]$EwsUrl,
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
+    [string]$EwsUrl,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
-	[switch]$Office365,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
+    [switch]$Office365,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]
-	[string]$EWSManagedApiPath = "",
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]
+    [string]$EWSManagedApiPath = "",
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]
-	[switch]$IgnoreSSLCertificate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]
+    [switch]$IgnoreSSLCertificate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]
-	[switch]$AllowInsecureRedirection,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]
+    [switch]$AllowInsecureRedirection,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]
+    [string]$LogFile = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]
-	[string]$TraceFile,
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]
+    [string]$TraceFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, changes will be made to the mailbox (but actions that would be taken will be logged)")]	
-	[switch]$WhatIf
+    [Parameter(Mandatory=$False,HelpMessage="If specified, changes will be made to the mailbox (but actions that would be taken will be logged)")]	
+    [switch]$WhatIf
 )
-$script:ScriptVersion = "1.0.3"
+$script:ScriptVersion = "1.0.4"
 
 # Define our functions
 
@@ -781,7 +793,7 @@ function GetFolderPath($Folder)
     $parentFolder = ThrottledFolderBind $Folder.Id $propset
     $folderPath = $Folder.DisplayName
     $parentFolderId = $Folder.Id
-    while ($parentFolder.ParentFolderId -ne $parentFolderId)
+    while ($parentFolder -ne $null -and $parentFolder.ParentFolderId -ne $parentFolderId )
     {
         if ($script:folderCache.ContainsKey($parentFolder.ParentFolderId.UniqueId))
         {
@@ -790,6 +802,11 @@ function GetFolderPath($Folder)
         else
         {
             $parentFolder = ThrottledFolderBind $parentFolder.ParentFolderId $propset
+            if ($parentFolder -eq $null)
+            {
+                $script:LastError = $Error[0]
+                return $folderPath
+            }
             $script:FolderCache.Add($parentFolder.Id.UniqueId, $parentFolder)
         }
         $folderPath = $parentFolder.DisplayName + "\" + $folderPath
@@ -837,6 +854,245 @@ Function EWSPropertyType($MAPIPropertyType)
     }
     Write-Verbose "Couldn't match MAPI property type"
     return $Null
+}
+
+Function GenerateEWSProp($PropertyDefinition)
+{
+    # Parse the string representation of the property and return as ExtendedPropertyDefinition
+    $EWSPropDef = $null
+
+    if ($PropertyDefinition.Contains("/"))
+    {
+        # Property definition will be one of these:
+        # {GUID}/name/mapiType - named property
+        # {GUID]/id/mapiType   - MAPI property (shouldn't be used when accessing named properties)
+        # DefaultExtendedPropertySet/name/mapiType
+
+        $propElements = $PropDef -Split "/"
+        if ($propElements.Length -eq 2)
+        {
+            # We expect three elements, but if there are two it most likely means that the MAPI property Id includes the Mapi type
+            if ($propElements[1].Length -eq 8)
+            {
+                $propElements += $propElements[1].Substring(4)
+                $propElements[1] = [Convert]::ToInt32($propElements[1].Substring(0,4),16)
+            }
+        }
+
+        if ( $propElements[0].StartsWith("{") )
+        {
+            # GUID based property definition
+            try
+            {
+                $guid = New-Object Guid($propElements[0])
+                $propType = EWSPropertyType($propElements[2])
+                $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($guid, $propElements[1], $propType)
+            }
+            catch {}
+        }
+        else
+        {
+            # Test DefaultExtendedPropertySet definition
+            try
+            {
+                $propSet = [Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::$($propElements[0])
+                $propType = EWSPropertyType($propElements[2])
+                $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($propSet, $propElements[1], $propType)
+            }
+            catch {}
+        }
+    }
+    else
+    {
+        # Assume MAPI property (e.g. 0x30070040, which is PR_CREATION_TIME)
+        if ($PropertyDefinition.ToLower().StartsWith("0x"))
+        {
+            $PropertyDefinition = $PropertyDefinition.SubString(2)
+        }
+        try
+        {
+            $propId = [Convert]::ToInt32($PropertyDefinition.SubString(0,4),16)
+            $propType = EWSPropertyType($PropertyDefinition.SubString(5))
+            $propdef = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition($propId, $propType)
+        }
+        catch {}
+    }
+
+    if ($propdef -ne $Null)
+    {
+        LogVerbose "Property $PropertyDefinition successfully parsed"
+    }
+    else
+    {
+        Log "Failed to parse $PropertyDefinition"
+    }
+    return $propdef
+}
+
+Function GenerateEWSPropList($PropertyDefinitions)
+{
+    # Convert the given property definitions into EWS definitions
+    $props = @()
+
+    foreach ($PropDef in $PropertyDefinitions)
+    {
+        $EWSPropDef = GenerateEWSProp($PropDef)
+        if ($EWSPropDef -ne $Null)
+        {
+            $props += $EWSPropDef
+        }
+        else
+        {
+            Log "Failed to parse (or convert) property $PropDef" Red
+        }
+    }
+    return $props
+}
+
+Function CreatePropLists()
+{
+    # Process each of the parameters that can contain properties and convert them to EWS property lists
+
+    if ($DeleteItemProperties)
+    {
+        Write-Verbose "Building list of properties to delete"
+        $script:deleteItemPropsEws = GenerateEWSPropList($DeleteItemProperties)
+    }
+
+    if ($PropertiesMustExist)
+    {
+        Write-Verbose "Building list of properties that must exist"
+        $script:propertiesMustExistEws = GenerateEWSPropList($PropertiesMustExist)
+    }
+
+    if ($PropertiesMustMatch)
+    {
+        Write-Verbose "Building list of properties that must match"
+        $script:propertiesMustMatchEws = @{}
+
+        foreach ($PropDef in $PropertiesMustMatch.Keys)
+        {
+            $EWSPropDef = GenerateEWSProp($PropDef)
+            if ($EWSPropDef -ne $Null)
+            {
+                $script:propertiesMustMatchEws.Add($EWSPropDef, $PropertiesMustMatch[$PropDef])
+            }
+
+        }
+    }
+}
+
+function FolderHasRequiredProperties($folder)
+{
+    # Check that this folder matches any property requirements
+    if ($script:propertiesMustExistEws -eq $null)
+    {
+        # No properties to test
+        return $true
+    }
+
+    foreach ($requiredProperty in $script:propertiesMustExistEws)
+    {
+        # Check the folder has this property
+        $propExists = $false
+        if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
+        {
+            LogDebug "Checking for $($requiredProperty.PropertySetId)"
+            foreach ($itemProperty in $item.ExtendedProperties)
+            {
+                if ($requiredProperty.PropertySetId -eq $itemProperty.PropertyDefinition.PropertySetId)
+                {
+                    # Same property set, check the value
+                    if (![String]::IsNullOrEmpty(($requiredProperty.Id)))
+                    {
+                        if ($requiredProperty.Id -eq $itemProperty.PropertyDefinition.Id)
+                        {
+                            $propExists = $true
+                            break
+                        }
+                    }
+                    elseif (![String]::IsNullOrEmpty(($requiredProperty.Name)))
+                    {
+                        if ($requiredProperty.Name -eq $itemProperty.PropertyDefinition.Name)
+                        {
+                            $propExists = $true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        elseif ($requiredProperty.Tag -ne $null)
+        {
+            LogDebug "Checking for $($requiredProperty.Tag)"
+            foreach ($itemProperty in $item.ExtendedProperties)
+            {
+                if ($requiredProperty.Tag -eq $itemProperty.PropertyDefinition.Tag)
+                {
+                    $propExists = $true
+                    break
+                }
+            }               
+        }
+        if (!$propExists)
+        {
+            Write-Verbose "$requiredProperty does not exist, ignoring item"
+            return $false
+        }
+    }
+    return $true
+}
+
+function FolderPropertiesMatchRequirements($item)
+{
+    if ($script:propertiesMustMatchEws -ne $null)
+    {
+        foreach ($requiredProperty in $script:propertiesMustMatchEws.Keys)
+        {
+            # Check the item has this property
+            $propMatches = $false
+
+            foreach ($itemProperty in $item.ExtendedProperties)
+            {
+                if (![String]::IsNullOrEmpty(($requiredProperty.PropertySetId)))
+                {
+                    if ($requiredProperty.PropertySetId -eq $itemProperty.PropertyDefinition.PropertySetId)
+                    {
+                        # Same property set, check the value
+                        if (![String]::IsNullOrEmpty(($requiredProperty.Id)))
+                        {
+                            if ($requiredProperty.Id -eq $itemProperty.PropertyDefinition.Id)
+                            {
+                                $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                                break
+                            }
+                        }
+                        elseif (![String]::IsNullOrEmpty(($requiredProperty.Name)))
+                        {
+                            if ($requiredProperty.Name -eq $itemProperty.PropertyDefinition.Name)
+                            {
+                                $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                                break
+                            }
+                        }
+                    }
+                }
+                elseif ($requiredProperty.Tag -ne $null -and $requiredProperty.Tag -eq $itemProperty.PropertyDefinition.Tag)
+                {
+                    # Check MAPI extended property
+                    $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                    break
+                }
+            }
+
+            if (!$propMatches)
+            {
+                Write-Verbose "$requiredProperty does not match, ignoring item"
+                return $false
+            }
+        }
+    }
+    return $true    
 }
 
 Function HexStringToByteArray {
@@ -1196,10 +1452,18 @@ Function PurgeFolder($Folder)
         {
             if (!$WhatIf)
             {
-                $Folder.Empty([Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, $False)
+                if ($HardPurge)
+                {
+                    $Folder.Empty([Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete, $False)
+                }
+                else
+                {
+                    $Folder.Empty([Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, $False)
+                }
+                
+                $Folder.Load()
             }
             LogFolderAction $Folder "emptied" Green
-            $Folder.Load()
             return
         }
 	    catch
@@ -1209,6 +1473,11 @@ Function PurgeFolder($Folder)
 		        LogFolderAction $Folder "unable to Empty(), attempting manual deletion" Yellow
             }
 	    }
+    }
+
+    if ($WhatIf)
+    {
+        return
     }
 
     # Delete all items from the folder
@@ -1271,6 +1540,7 @@ Function PurgeFolder($Folder)
     {
         Log "$($itemsToDelete.Count) item(s) found; attempting to delete" Green
         ThrottledBatchDelete $itemsToDelete
+        LogFolderAction $Folder "manually emptied" Green
     }
     else
     {
@@ -1328,7 +1598,7 @@ Function IsFolderExcluded()
                     {
                         if ($prop.Value -eq 2)
                         {
-                            Log "[IsFolderExcluded]Ignoring search folder: $folderPath"
+                            Log "[IsFolderExcluded]Ignoring search folder: $folderPath" Gray
                             return $true
                         }
                         LogVerbose "[IsFolderExcluded]Folder is of type: $($prop.Value)"
@@ -1343,19 +1613,66 @@ Function IsFolderExcluded()
         }
     }
 
-    if ($ExcludedFolderPaths)
+    # Check if this is a specifically excluded path
+    if ($ExcludedFolderPaths -and ![String]::IsNullOrEmpty($folderPath) )
     {
         LogVerbose "Checking for exclusions: $($ExcludeFolderList -join ',')"
         ForEach ($excludedFolder in $ExcludedFolderPaths)
         {
             if ($folderPath.ToLower().Equals($excludedFolder.ToLower()))
             {
-                Log "[IsFolderExcluded]Excluded folder being skipped: $folderPath"
+                Log "[IsFolderExcluded]Excluded folder being skipped: $folderPath" Gray
                 return $true
             }
         }
     }
+
+
     return $false
+}
+
+Function FolderMatchesDateRequirement
+{
+    param ($folder)
+
+    # Check if we have creation date criteria
+    $createdTime = $null
+    if ($folder.ExtendedProperties.Count -gt 0)
+    {
+        foreach ($prop in $folder.ExtendedProperties)
+        {
+            if ($prop.PropertyDefinition -eq $script:PR_CREATION_TIME)
+            {
+                $createdTime = $prop.Value
+                LogVerbose "[FolderMatchesDateRequirement]Folder created: $createdTime"
+            }
+        }
+    }
+
+    if ($createdTime -eq $null)
+    {
+        # If we can't read the creation time, we assume it doesn't match our criteria
+        LogVerbose "[FolderMatchesDateRequirement]Unable to retrieve PR_CREATION_TIME: $($folder.DisplayName)"
+        return $false
+    }
+
+    if ($CreatedAfter)
+    {
+        if ($createdTime -lt $CreatedAfter)
+        {
+            LogVerbose "[FolderMatchesDateRequirement]Folder does not match CreatedAfter requirement: $($folder.DisplayName)"
+            return $false
+        }
+    }
+    if ($CreatedBefore)
+    {
+        if ($createdTime -gt $CreatedBefore)
+        {
+            LogVerbose "[FolderMatchesDateRequirement]Folder does not match CreatedBefore requirement: $($folder.DisplayName)"
+            return $false
+        }
+    }
+    return $true
 }
 
 Function ProcessFolder()
@@ -1416,6 +1733,13 @@ Function ProcessFolder()
         Log "Folder excluded: $($Folder.DisplayName)" Gray
         return
     }
+    if ( !(FolderMatchesDateRequirement $Folder) )
+    {
+        Log "Folder doesn't match date requirement: $($Folder.DisplayName)" Gray
+        return
+    }
+
+
 
     Log "Processing folder: $($Folder.DisplayName)" Gray
 
@@ -1433,19 +1757,32 @@ Function ProcessFolder()
 		    # Folder is empty, so can be safely deleted
 		    try
 		    {
-			    $Folder.Delete([Microsoft.Exchange.Webservices.Data.DeleteMode]::SoftDelete)
+                if (!$WhatIf)
+                {
+			        $Folder.Delete([Microsoft.Exchange.Webservices.Data.DeleteMode]::SoftDelete)
+                }
 			    LogFolderAction $Folder "deleted" Green
 		    }
-		    catch {}
-            ReportError "deleting $($Folder.DisplayName)"
+		    catch
+            {
+                ReportError "deleting $($Folder.DisplayName)"
+            }
 	    }
 	    else
 	    {
 		    # Folder is not empty
-		    LogFolderAction $Folder "could not be deleted as it is not empty." Red
+            if ($WhatIf)
+            {
+                LogFolderAction $Folder "deleted" Green
+            }
+            else
+            {
+		        LogFolderAction $Folder "could not be deleted as it is not empty." Red
+            }
 	    }
         return # If Delete is specified, any other parameter is irrelevant
     }
+    Log "3"
 
     DeleteFolderProperties($Folder)
     AddFolderProperties($Folder)
@@ -1577,8 +1914,9 @@ function ProcessMailbox()
 
     # Define the properties we need to retrieve
     $script:PR_FOLDER_TYPE = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3601, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Integer)
+    $script:PR_CREATION_TIME = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3007, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime)
     $script:requiredFolderProperties = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName,
-        [Microsoft.Exchange.WebServices.Data.FolderSchema]::FolderClass, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ParentFolderId, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ChildFolderCount, $script:PR_FOLDER_TYPE)
+        [Microsoft.Exchange.WebServices.Data.FolderSchema]::FolderClass, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ParentFolderId, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ChildFolderCount, $script:PR_FOLDER_TYPE, $script:PR_CREATION_TIME)
 	
 	# Get our root folder
     $rootFolder = $Null
