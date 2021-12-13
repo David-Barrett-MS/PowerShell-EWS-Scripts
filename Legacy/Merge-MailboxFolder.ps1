@@ -1,16 +1,16 @@
 #
 # Merge-MailboxFolder.ps1
 #
-# By David Barrett, Microsoft Ltd. 2015-2019. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2015-2021. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
-# THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-# MICROSOFT FURTHER DISCLAIMS ALL IMPLIED WARRANTIES INCLUDING WITHOUT LIMITATION ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR OF FITNESS FOR
-# A PARTICULAR PURPOSE. THE ENTIRE RISK ARISING OUT OF THE USE OR PERFORMANCE OF THE SAMPLES REMAINS WITH YOU. IN NO EVENT SHALL
-# MICROSOFT OR ITS SUPPLIERS BE LIABLE FOR ANY DAMAGES WHATSOEVER (INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS,
-# BUSINESS INTERRUPTION, LOSS OF BUSINESS INFORMATION, OR OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF OR INABILITY TO USE THE
-# SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
-# OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
+# THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
 
 # TO-DO
 # 1. Add ability to copy specific properties from source folder to target (e.g. retention).
@@ -116,6 +116,12 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
     [string]$OAuthRedirectUri = "http://localhost/code",
 
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    [string]$OAuthSecretKey = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    $OAuthCertificate = $null,
+
     [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
     [switch]$Impersonate,
 
@@ -155,7 +161,8 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.0"
+$script:ScriptVersion = "1.2.1"
+
 
 # Define our functions
 
@@ -316,26 +323,88 @@ function LoadLibraries()
     return $true
 }
 
-function LoadADAL
+function GetTokenWithCertificate
 {
-    # First of all, we check if ADAL is already available
-    # To do this, we simply try to instantiate an authentication context to the common log-on Url.  If we get an object back, we have ADAL
+    # We use MSAL with certificate auth
+    if (!script:msalApiLoaded)
+    {
+        $msalLocation = @()
+        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
+        if (!$script:msalApiLoaded)
+        {
+            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
+            exit
+        }
+    }   
 
-    LogDebug "Checking for ADAL"
-    $authenticationContextCommon = $null
+    $cca1 = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca2 = $cca1.WithCertificate($OAuthCertificate)
+    $cca3 = $cca2.WithTenantId($OAuthTenantId)
+    $cca = $cca3.Build()
+
+    $scopes = New-Object System.Collections.Generic.List[string]
+    $scopes.Add("https://outlook.office365.com/.default")
+    $acquire = $cca.AcquireTokenForClient($scopes)
+    $authResult = $acquire.ExecuteAsync().Result
+    $script:oauthToken = $authResult
+    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+}
+
+function GetTokenViaCode
+{
+    # Acquire auth code (needed to request token)
+    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+    Start-Process $authUrl
+
+    $authcode = Read-Host "Auth code"
+    $codeStart = $authcode.IndexOf("?code=")
+    if ($codeStart -gt 0)
+    {
+        $authcode = $authcode.Substring($codeStart+6)
+    }
+    $codeEnd = $authcode.IndexOf("&session_state=")
+    if ($codeEnd -gt 0)
+    {
+        $authcode = $authcode.Substring(0, $codeEnd)
+    }
+    Write-Verbose "Using auth code: $authcode"
+
+    # Acquire token (using the auth code)
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
     try
     {
-        $authenticationContextCommon = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    } catch {}
-    if ($authenticationContextCommon -ne $null)
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
     {
-        LogVerbose "ADAL already available, no need to load dlls."
-        return $true
+        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function GetTokenWithKey
+{
+    $Body = @{
+      "grant_type"    = "client_credentials";
+      "client_id"     = "$OAuthClientId";
+      "client_secret" = "$OAuthSecretKey";
+      "scope"         = "https://outlook.office365.com/.default"
     }
 
-    # Load the ADAL libraries
-    $adalDllsLocation = @()
-    return $(LoadLibraries $false @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll") ([ref]$adalDllsLocation) )
+    try
+    {
+        $script:oAuthToken = Invoke-RestMethod -Method POST -uri "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token" -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
 }
 
 function GetOAuthCredentials
@@ -346,45 +415,35 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ( $(LoadADAL) -eq $false )
+    if ($script:oauthToken -ne $null)
     {
-        Log "Failed to load ADAL, which is required for OAuth" Red
-        Exit
+        # We already have a token
+        if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
+        {
+            # Token still valid, so return that
+            $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
+            return $exchangeCredentials
+        }
+
+        # Token needs renewing
+
     }
 
-    $script:authenticationResult = $null
-    if ([String]::IsNullOrEmpty($OAuthTenantId))
+    if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
+        GetTokenWithKey
+    }
+    elseif ($OAuthCertificate -ne $null)
+    {
+        GetTokenWithCertificate
     }
     else
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.microsoftonline.com/$OAuthTenantId", $False)
-    }
-    if ($RenewToken)
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Auto)
-    }
-    else
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::SelectAccount)
+        GetTokenViaCode
     }
 
-    $redirectUri = New-Object Uri($OAuthRedirectUri)
-    $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
-
-    if ( !$authenticationResult.IsFaulted )
-    {
-        $script:oAuthToken = $authenticationResult.Result
-        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthToken.AccessToken)
-        $Mailbox = $authenticationResult.Result.UserInfo.UniqueId
-        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId), access token expires $($script:oAuthToken.ExpiresOn)"
-    }
-    else
-    {
-        ReportError "GetOAuthCredentials"
-    }
-
+    # If we get here we have a valid token
+    $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
     return $exchangeCredentials
 }
 
@@ -604,13 +663,18 @@ Function CreateTraceListener($service)
             }
 "@
 
+        $script:Tracer = $null
         $TraceCompilation=$Provider.CompileAssemblyFromSource($Params,$TraceListenerClass)
-        $TraceAssembly=$TraceCompilation.CompiledAssembly
-        $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
+        If ($TraceCompilation)
+        {
+            $TraceAssembly=$TraceCompilation.CompiledAssembly
+            $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
+            # Attach the trace listener to the Exchange service
+            $service.TraceListener = $script:Tracer
+        }
     }
 
-    # Attach the trace listener to the Exchange service
-    $service.TraceListener = $script:Tracer
+
 }
 
 Function DecreaseBatchSize()
@@ -942,7 +1006,10 @@ Function ThrottledBatchMove()
                     $lastResponse = [String]::Empty
                     try
                     {
-                        $lastResponse = $script:Tracer.LastResponse.Replace("<?xml version=`"1.0`" encoding=`"utf-8`"?>", "")
+                        if ($script:Tracer)
+                        {
+                            $lastResponse = $script:Tracer.LastResponse.Replace("<?xml version=`"1.0`" encoding=`"utf-8`"?>", "")
+                        }
                     } catch {}
                     if (![String]::IsNullOrEmpty($lastResponse))
                     {
@@ -1489,7 +1556,7 @@ Function GetFolder()
             $wkf = $wkf.Substring( 0, $wkf.IndexOf("\") )
         }
         LogVerbose "[GetFolder]Attempting to bind to well known folder: $wkf"
-        $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::$wkf, $mbx )
+        $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::$wkf, $Mailbox )
         $RootFolder = ThrottledFolderBind $folderId $null $RootFolder.Service
         if ($RootFolder -ne $null)
         {
@@ -1728,8 +1795,15 @@ function CreateService($smtpAddress)
     if (![String]::IsNullOrEmpty($EWSManagedApiPath))
     {
         CreateTraceListener $exchangeService
-        $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
-        $exchangeService.TraceEnabled = $True
+        if ($script:Tracer)
+        {
+            $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+            $exchangeService.TraceEnabled = $True
+        }
+        else
+        {
+            Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
+        }
     }
 
     $script:services.Add($smtpAddress, $exchangeService)
