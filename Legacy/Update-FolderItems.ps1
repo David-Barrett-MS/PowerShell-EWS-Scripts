@@ -56,6 +56,12 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange")]
     [string]$SearchFilter,
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have recipients not from the listed domains will be matched.")]
+    $RecipientsNotFromDomains,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have recipients from the listed domains will be matched.")]
+    $RecipientsFromDomains,
+
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have values in the given properties will be updated.")]
     $PropertiesMustExist,
 
@@ -108,7 +114,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.6"
+$script:ScriptVersion = "1.1.7"
 
 if ($ForceTLS12)
 {
@@ -568,6 +574,46 @@ function ThrottledFolderBind()
                 $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($script:service, $folderId, $propset)
             }
             return $folder
+        }
+        catch {}
+    }
+
+    # If we get to this point, we have been unable to bind to the folder
+    return $null
+}
+
+function ThrottledItemBind()
+{
+    param (
+        [Microsoft.Exchange.WebServices.Data.ItemId]$itemId,
+        $propset = $null
+    )
+
+    LogVerbose "Attempting to bind to item $itemId"
+    if ($propset -eq $null)
+    {
+        $propset = $script:RequiredPropSet
+    }
+    try
+    {
+        $item = [Microsoft.Exchange.WebServices.Data.Item]::Bind($script:service, $itemId, $propset)
+        Start-Sleep -Milliseconds $script:throttlingDelay
+        if (-not ($item -eq $null))
+        {
+            LogVerbose "Successfully bound to item $($itemId): $($item.Subject)"
+        }
+        return $item
+    }
+    catch
+    {
+    }
+
+    if (Throttled)
+    {
+        try
+        {
+            $item = [Microsoft.Exchange.WebServices.Data.Item]::Bind($script:service, $itemId, $propset)
+            return $item             
         }
         catch {}
     }
@@ -1340,6 +1386,92 @@ function ItemPropertiesMatchRequirements($item)
     return $true    
 }
 
+Function InitRecipientMatchInfo()
+{
+    $script:filterRecipients = $false
+    if ($RecipientsNotFromDomains -or $RecipientsFromDomains)
+    {
+        # We have recipient filters, so ensure we get recipient properties and initialise our checks
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::ToRecipients)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::CcRecipients)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
+        $script:filterRecipients = $true
+    }
+}
+
+Function ItemMatchesRecipientRequirements($item)
+{
+    if ( !$script:filterRecipients)
+    {
+        return $true
+    }
+
+
+    # Get the domain part of each recipient
+    $recipientDomains = @()
+
+    if ($item.ToRecipients.Count -gt 0)
+    {
+        foreach ($recipient in $item.ToRecipients)
+        {
+            if ($recipient.RoutingType -eq "SMTP")
+            {
+                $recipientSMTPAddress = $recipient.Address
+                $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
+                $recipientDomains += $recipientDomain.ToLower()
+            }
+        }
+    }
+    if ($item.CcRecipients.Count -gt 0)
+    {
+        foreach ($recipient in $item.CcRecipients)
+        {
+            if ($recipient.RoutingType -eq "SMTP")
+            {
+                $recipientSMTPAddress = $recipient.Address
+                $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
+                $recipientDomains += $recipientDomain.ToLower()
+            }
+        }
+    }
+    if ($item.Sender.RoutingType -eq "SMTP")
+    {
+        $recipientSMTPAddress = $item.Sender.Address
+        $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
+        $recipientDomains += $recipientDomain.ToLower()
+    }
+
+    $recipientMatch = $false
+    if ($RecipientsNotFromDomains)
+    {
+        # If any recipients are not from the given domains, then this message matches our filter
+        foreach ($checkDomain in $recipientDomains)
+        {
+            if (-not ($RecipientsNotFromDomains.Contains($checkDomain)) )
+            {
+                $recipientMatch = $true
+                break
+            }
+        }
+    }
+
+    if ($RecipientsFromDomains)
+    {
+        # If any recipients are from the given domains, then this message matches our filter
+        foreach ($checkDomain in $recipientDomains)
+        {
+            if ( $RecipientsFromDomains.Contains($checkDomain) )
+            {
+                $recipientMatch = $true
+                break
+            }
+        }
+    }
+
+    return $recipientMatch
+}
+
 Function ProcessItem()
 {
 	# Apply updates to the given item
@@ -1349,15 +1481,17 @@ Function ProcessItem()
 	{
 		throw "No item specified"
 	}
+
+    $item = ThrottledItemBind($item.Id)
     
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
+    if ( -not (ItemMatchesRecipientRequirements($item)) ) { return }
 
     LogVerbose "Processing item: $($item.Subject)"
     $script:itemsMatched++
     if ($ListMatches)
     {
         $item
-        #Log "$($item.Id.UniqueId) : $($item.Subject)"
     }
 
     # Check for delete first of all
@@ -1565,11 +1699,13 @@ Function InitialiseItemPropertySet()
             }
         }
     }
+
+    InitRecipientMatchInfo
 }
 
 Function ProcessFolder()
 {
-	# Process all items within this folder
+	# Process this folder
 
     $Folder = $args[0]
 	if ($Folder -eq $null)
@@ -1653,7 +1789,10 @@ Function ProcessFolder()
 	while ($MoreItems)
 	{
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView($PageSize, $Offset, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
-		$View.PropertySet = $script:RequiredPropSet
+		#$View.PropertySet = $script:RequiredPropSet
+        # As some properties (e.g. recipients) cannot be retrieved using FindItem, we only retrive item Ids here and perform a GetItem later to get the properties
+        $View.PropertySet = [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly
+
         if ($AssociatedItems)
         {
             $View.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Associated
