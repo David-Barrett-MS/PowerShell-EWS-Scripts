@@ -1,16 +1,16 @@
 #
 # Update-FolderItems.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016-2019. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2016-2021. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
-# THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
-# MICROSOFT FURTHER DISCLAIMS ALL IMPLIED WARRANTIES INCLUDING WITHOUT LIMITATION ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR OF FITNESS FOR
-# A PARTICULAR PURPOSE. THE ENTIRE RISK ARISING OUT OF THE USE OR PERFORMANCE OF THE SAMPLES REMAINS WITH YOU. IN NO EVENT SHALL
-# MICROSOFT OR ITS SUPPLIERS BE LIABLE FOR ANY DAMAGES WHATSOEVER (INCLUDING, WITHOUT LIMITATION, DAMAGES FOR LOSS OF BUSINESS PROFITS,
-# BUSINESS INTERRUPTION, LOSS OF BUSINESS INFORMATION, OR OTHER PECUNIARY LOSS) ARISING OUT OF THE USE OF OR INABILITY TO USE THE
-# SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
-# OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
+# THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
 
 param (
     [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
@@ -28,6 +28,9 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed")]
     [switch]$ProcessSubfolders,
+
+    [Parameter(Mandatory=$False,HelpMessage="When specified, hidden (associated) items of the folder are processed (normal items are ignored)")]
+    [switch]$AssociatedItems,
 	
     [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the item(s) (must be supplied as hash table @{})")]
     $AddItemProperties,
@@ -59,7 +62,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary @{""propId"" = ""value""}")]
     $PropertiesMustMatch,
 
-    [Parameter(Mandatory=$False,HelpMessage="Any matching items will have Id and Subject written to log/console")]
+    [Parameter(Mandatory=$False,HelpMessage="Outputs any matching items (can be collected for further processing)")]
     [switch]$ListMatches,
 
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
@@ -105,7 +108,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.5"
+$script:ScriptVersion = "1.1.6"
 
 if ($ForceTLS12)
 {
@@ -1644,11 +1647,17 @@ Function ProcessFolder()
         LogVerbose "Search query being applied: $SearchFilter"
     }
 
+
+
     Write-Progress -Activity "$progressActivity reading items" -Status "0 items found" -PercentComplete -1
 	while ($MoreItems)
 	{
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView($PageSize, $Offset, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
 		$View.PropertySet = $script:RequiredPropSet
+        if ($AssociatedItems)
+        {
+            $View.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Associated
+        }
 
         try
         {
