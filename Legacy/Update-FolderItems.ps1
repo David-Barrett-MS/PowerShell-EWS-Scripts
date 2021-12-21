@@ -71,6 +71,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Outputs any matching items (can be collected for further processing)")]
     [switch]$ListMatches,
 
+    [Parameter(Mandatory=$False,HelpMessage="If set, a separate GetItem request is sent to retrieve each item.  Much slower (batch processing is used otherwise), but may need to be used if querying large properties.")]
+    [switch]$LoadItemsIndividually,
+
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credentials")]
     [System.Management.Automation.PSCredential]$Credential,
@@ -114,7 +117,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.7"
+$script:ScriptVersion = "1.1.8"
 
 if ($ForceTLS12)
 {
@@ -1482,8 +1485,6 @@ Function ProcessItem()
 		throw "No item specified"
 	}
 
-    $item = ThrottledItemBind($item.Id)
-    
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
     if ( -not (ItemMatchesRecipientRequirements($item)) ) { return }
 
@@ -1500,11 +1501,11 @@ Function ProcessItem()
         if (-not $WhatIf)
         {
             [void]$script:itemsToDelete.Add($item.Id)
-            Log "$($item.Subject) added to list of items to be deleted" Gray
+            Log "`"$($item.Subject)`" added to list of items to be deleted" Gray
         }
         else
         {
-            Log "$($item.Subject) would be deleted" Gray
+            Log "`"$($item.Subject)`" would be deleted" Gray
         }
         $script:itemsDeleted++
         return # If Delete is specified, any other parameter is irrelevant
@@ -1846,15 +1847,62 @@ Function ProcessFolder()
     # Now go through each item and process it
     Write-Progress -Activity "$progressActivity processing items" -Status "0 items processed" -PercentComplete 0
     $i = 0
-    ForEach ($item in $itemsToProcess)
+
+    if ($LoadItemsIndividually)
     {
-        ProcessItem $item
-        $i++
-        if ($i%10 -eq 0)
+        # Send a GetItem request for each item
+        ForEach ($item in $itemsToProcess)
         {
-            Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
+            ProcessItem (ThrottledItemBind($item.Id))
+            $i++
+            if ($i%10 -eq 0)
+            {
+                Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
+            }
         }
     }
+    else
+    {
+        # We send GetItem request for 100 items at a time
+	    $itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
+	    $itemIdType = [Type] $itemId.GetType()
+	    $genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
+
+        $itemIds = [Activator]::CreateInstance($genericItemIdList)
+        ForEach ($item in $itemsToProcess)
+        {
+            $itemIds.Add($item.Id)
+            $i++
+            if ($itemIds.Count -ge 500)
+            {
+                # We have 500 Ids in our list, so retrieve these items and process
+                $fullItems = $script:service.BindToItems( $itemIds, $script:RequiredPropSet )
+                foreach ($fullItem in $fullItems)
+                {
+                    ProcessItem $fullItem.Item
+                }
+                $itemIds = [Activator]::CreateInstance($genericItemIdList)
+
+            }
+            if ($i%10 -eq 0)
+            {
+                Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
+            }
+        }
+        if ($itemIds.Count -ge 0)
+        {
+            # Process the remaining items
+            $fullItems = $script:service.BindToItems( $itemIds, $script:RequiredPropSet )
+            
+            foreach ($fullItem in $fullItems)
+            {
+                ProcessItem $fullItem.Item
+            }
+            $itemIds = [Activator]::CreateInstance($genericItemIdList)
+
+        }
+    }
+
     Write-Progress -Activity "$progressActivity processing items" -Status "Complete" -Completed
 
     if ($script:itemsToDelete.Count -gt 0)
