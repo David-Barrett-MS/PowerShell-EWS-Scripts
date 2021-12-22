@@ -50,9 +50,12 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted")]
     [switch]$DeleteContactPhoto,
     
-    [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s)")]
+    [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s). Default is a soft delete.")]
     [switch]$Delete,
     
+    [Parameter(Mandatory=$False,HelpMessage="When used with -Delete, forces a hard delete of the item(s).")]
+    [switch]$HardDelete,
+
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange")]
     [string]$SearchFilter,
 
@@ -80,12 +83,21 @@ param (
 				
     [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
     [switch]$OAuth,
-	
+
     [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
     [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
-	
+
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
+    [string]$OAuthTenantId = "",
+
     [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
     [string]$OAuthRedirectUri = "http://localhost/code",
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    [string]$OAuthSecretKey = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    $OAuthCertificate = $null,
 	
     [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
     [switch]$Impersonate,
@@ -117,7 +129,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.8"
+$script:ScriptVersion = "1.1.9"
 
 if ($ForceTLS12)
 {
@@ -244,52 +256,160 @@ function LoadLibraries()
     return $true
 }
 
-function LoadADAL
+function GetTokenWithCertificate
 {
-    # First of all, we check if ADAL is already available
-    # To do this, we simply try to instantiate an authentication context to the common log-on Url.  If we get an object back, we have ADAL
-
-    LogDebug "Checking for ADAL"
-    $authenticationContextCommon = $null
-    try
+    # We use MSAL with certificate auth
+    if (!script:msalApiLoaded)
     {
-        $authenticationContextCommon = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    } catch {}
-    if ($authenticationContextCommon -ne $null)
-    {
-        LogVerbose "ADAL already available, no need to load dlls."
-        return $true
-    }
+        $msalLocation = @()
+        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
+        if (!$script:msalApiLoaded)
+        {
+            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
+            exit
+        }
+    }   
 
-    # Load the ADAL libraries
-    $adalDllsLocation = @()
-    return $(LoadLibraries $false @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll") ([ref]$adalDllsLocation) )
+    $cca1 = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca2 = $cca1.WithCertificate($OAuthCertificate)
+    $cca3 = $cca2.WithTenantId($OAuthTenantId)
+    $cca = $cca3.Build()
+
+    $scopes = New-Object System.Collections.Generic.List[string]
+    $scopes.Add("https://outlook.office365.com/.default")
+    $acquire = $cca.AcquireTokenForClient($scopes)
+    $authResult = $acquire.ExecuteAsync().Result
+    $script:oauthToken = $authResult
+    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $Impersonate = $true
 }
 
-function GetOAuthCredentials()
+function GetTokenViaCode
+{
+    # Acquire auth code (needed to request token)
+    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+    Start-Process $authUrl
+
+    $authcode = Read-Host "Auth code"
+    $codeStart = $authcode.IndexOf("?code=")
+    if ($codeStart -gt 0)
+    {
+        $authcode = $authcode.Substring($codeStart+6)
+    }
+    $codeEnd = $authcode.IndexOf("&session_state=")
+    if ($codeEnd -gt 0)
+    {
+        $authcode = $authcode.Substring(0, $codeEnd)
+    }
+    Write-Verbose "Using auth code: $authcode"
+
+    # Acquire token (using the auth code)
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function GetTokenWithKey
+{
+    $Body = @{
+      "grant_type"    = "client_credentials";
+      "client_id"     = "$OAuthClientId";
+      "client_secret" = "$OAuthSecretKey";
+      "scope"         = "https://outlook.office365.com/.default"
+    }
+
+    try
+    {
+        $script:oAuthToken = Invoke-RestMethod -Method POST -uri "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token" -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+    $Impersonate = $true
+}
+
+function GetOAuthCredentials
 {
     # Obtain OAuth token for accessing mailbox
+    param (
+        [switch]$RenewToken
+    )
     $exchangeCredentials = $null
 
-    if ( $(LoadADAL) -eq $false )
+    if ($script:oauthToken -ne $null)
     {
-        Log "Failed to load ADAL, which is required for OAuth" Red
-        Exit
+        # We already have a token
+        if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
+        {
+            # Token still valid, so return that
+            $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
+            return $exchangeCredentials
+        }
+
+        # Token needs renewing
+
     }
 
-    $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Always)
-    $redirectUri = New-Object Uri($OAuthRedirectUri)
-    $authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
-
-    if ( !$authenticationResult.IsFaulted )
+    if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
-        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($authenticationResult.Result.AccessToken)
-        $Mailbox = $authenticationResult.Result.UserInfo.UniqueId
-        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId)"
+        GetTokenWithKey
+    }
+    elseif ($OAuthCertificate -ne $null)
+    {
+        GetTokenWithCertificate
+    }
+    else
+    {
+        GetTokenViaCode
     }
 
+    # If we get here we have a valid token
+    $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
     return $exchangeCredentials
+}
+
+function ApplyEWSOAuthCredentials
+{
+    # Apply EWS OAuth credentials to all our service objects
+
+    if ( $script:authenticationResult -eq $null ) { return }
+    if ( $script:services -eq $null ) { return }
+    if ( $script:services.Count -lt 1 ) { return }
+    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+
+    # The token has expired and needs refreshing
+    LogVerbose("OAuth access token invalid, attempting to renew")
+    $exchangeCredentials = GetOAuthCredentials -RenewToken
+    if ($exchangeCredentials -eq $null) { return }
+    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    { 
+        Log "OAuth Token renewal failed"
+        exit # We no longer have access to the mailbox, so we stop here
+    }
+
+    Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    if ($script:services.Count -gt 0)
+    {
+        foreach ($service in $script:services.Values)
+        {
+            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
+        }
+        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+    }
 }
 
 Function LoadEWSManagedAPI
@@ -497,7 +617,7 @@ Function Throttled()
             Start-Sleep -Seconds 15
             return $true
         }
-        return $false # Throttling does return a response, if we don't have one, then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
+        return $false # Throttling does return a response, if we don't have one then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
     }
 
     $lastResponse = $script:Tracer.LastResponse.Replace("<?xml version=`"1.0`" encoding=`"utf-8`"?>", "")
@@ -507,27 +627,8 @@ Function Throttled()
     if ($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value.Name -eq "BackOffMilliseconds")
     {
         # We are throttled, and the server has told us how long to back off for
-
-        # Increase our throttling delay to try and avoid throttling (we only increase to a maximum delay of 15 seconds between requests)
-        if ( $script:throttlingDelay -lt 15000)
-        {
-            if ($script:throttlingDelay -lt 1)
-            {
-                $script:throttlingDelay = 2000
-            }
-            else
-            {
-                $script:throttlingDelay = $script:throttlingDelay * 2
-            }
-            if ( $script:throttlingDelay -gt 15000)
-            {
-                $script:throttlingDelay = 15000
-            }
-        }
-        LogVerbose "Updated throttling delay to $($script:throttlingDelay)ms"
-
-        # Now back off for the time given by the server
-        Log "Throttling detected, server requested back off for $($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text") milliseconds" Yellow
+        # We back off for the time given by the server
+        Log "Throttling detected; server requested back off for $($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text") milliseconds" Yellow
         Start-Sleep -Milliseconds $responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text"
         Log "Throttling budget should now be reset, resuming operations" Gray
         return $true
@@ -542,6 +643,7 @@ function ThrottledFolderBind()
         $propset = $null
     )
 
+    ApplyEWSOAuthCredentials
     LogVerbose "Attempting to bind to folder $folderId"
     try
     {
@@ -592,6 +694,7 @@ function ThrottledItemBind()
         $propset = $null
     )
 
+    ApplyEWSOAuthCredentials
     LogVerbose "Attempting to bind to item $itemId"
     if ($propset -eq $null)
     {
@@ -646,7 +749,7 @@ function ThrottledItemUpdate()
         return $True
     }
 
-
+    ApplyEWSOAuthCredentials
     try
     {
         if ($isAppointment)
@@ -665,18 +768,19 @@ function ThrottledItemUpdate()
 
     if (Throttled)
     {
+        ApplyEWSOAuthCredentials
         try
         {
-        if ($isAppointment)
-        {
-            $item.Update([Microsoft.Exchange.WebServices.Data.ConflictResolutionMode]::AlwaysOverwrite, [Microsoft.Exchange.WebServices.Data.SendInvitationsOrCancellationsMode]::SendToNone)
-            LogVerbose "Appointment updated"
-        }
-        else
-        {
-            $item.Update([Microsoft.Exchange.WebServices.Data.ConflictResolutionMode]::AlwaysOverwrite)
-            LogVerbose "Item updated"
-        }
+            if ($isAppointment)
+            {
+                $item.Update([Microsoft.Exchange.WebServices.Data.ConflictResolutionMode]::AlwaysOverwrite, [Microsoft.Exchange.WebServices.Data.SendInvitationsOrCancellationsMode]::SendToNone)
+                LogVerbose "Appointment updated"
+            }
+            else
+            {
+                $item.Update([Microsoft.Exchange.WebServices.Data.ConflictResolutionMode]::AlwaysOverwrite)
+                LogVerbose "Item updated"
+            }
             return $True
         }
         catch
@@ -1094,6 +1198,7 @@ Function GetFolder()
 				$SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, $PathElements[$i])
 				
                 $FolderResults = $Null
+                ApplyEWSOAuthCredentials
                 try
                 {
 				    $FolderResults = $Folder.FindFolders($SearchFilter, $View)
@@ -1104,11 +1209,12 @@ Function GetFolder()
                 {
                     if (Throttled)
                     {
-                    try
-                    {
-				        $FolderResults = $Folder.FindFolders($SearchFilter, $View)
-                    }
-                    catch {}
+                        ApplyEWSOAuthCredentials
+                        try
+                        {
+				            $FolderResults = $Folder.FindFolders($SearchFilter, $View)
+                        }
+                        catch {}
                     }
                 }
                 if ($FolderResults -eq $null)
@@ -1212,7 +1318,7 @@ Function DeleteContactPhoto($item)
     # We need to load the Contact object and attachments
     LogVerbose "Checking for contact photo"
     $propset = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ContactSchema]::Attachments)
-    $contact = [Microsoft.Exchange.WebServices.Data.Contact]::Bind($item.Service, $item.Id, $propset)
+    $contact = ThrottledItemBind($item.Id, $propset)
 
     foreach ($attachment in $contact.Attachments)
     {
@@ -1576,10 +1682,6 @@ Function ThrottledBatchDelete()
     }
 
     $progressActivity = "Deleting items"
-	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
-	$itemIdType = [Type] $itemId.GetType()
-	#$baseList = [System.Collections.Generic.List``1]
-	$genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
     
     $finished = $false
     $totalItems = $ItemsToDelete.Count
@@ -1595,9 +1697,15 @@ Function ThrottledBatchDelete()
     }
     $consecutiveErrors = 0
 
+    $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete
+    if ($HardDelete)
+    {
+        $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete
+    }
+
     while ( !$finished )
     {
-	    $deleteIds = [Activator]::CreateInstance($genericItemIdList)
+        $deleteIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
         
         for ([int]$i=0; $i -lt $BatchSize; $i++)
         {
@@ -1613,7 +1721,7 @@ Function ThrottledBatchDelete()
         try
         {
             LogVerbose "Sending batch request to delete $($deleteIds.Count) items ($($ItemsToDelete.Count) remaining)"
-			$results = $script:service.DeleteItems( $deleteIds, [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, [Microsoft.Exchange.WebServices.Data.SendCancellationsMode]::SendToNone, $null )
+			$results = $script:service.DeleteItems( $deleteIds, $deleteMode, [Microsoft.Exchange.WebServices.Data.SendCancellationsMode]::SendToNone, $null )
             Start-Sleep -Milliseconds $script:throttlingDelay
             $consecutiveErrors = 0 # Reset the consecutive error count, as if we reach this point then this request succeeded with no error
         }
@@ -1728,6 +1836,7 @@ Function ProcessFolder()
 			$FolderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(500)
             while ($moreFolders)
             {
+                ApplyEWSOAuthCredentials
 			    $FindFoldersResults = $Folder.FindFolders($FolderView)
                 $subfolders += $FindFoldersResults.Folders
                 $moreFolders = $FindFoldersResults.MoreAvailable
@@ -1790,8 +1899,7 @@ Function ProcessFolder()
 	while ($MoreItems)
 	{
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView($PageSize, $Offset, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
-		#$View.PropertySet = $script:RequiredPropSet
-        # As some properties (e.g. recipients) cannot be retrieved using FindItem, we only retrive item Ids here and perform a GetItem later to get the properties
+        # As some properties (e.g. recipients) cannot be retrieved using FindItem, we only retrieve item Ids here and perform a GetItem later to get the properties
         $View.PropertySet = [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly
 
         if ($AssociatedItems)
@@ -1863,12 +1971,9 @@ Function ProcessFolder()
     }
     else
     {
-        # We send GetItem request for 100 items at a time
-	    $itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
-	    $itemIdType = [Type] $itemId.GetType()
-	    $genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
+        # We send GetItem request for 500 items at a time
 
-        $itemIds = [Activator]::CreateInstance($genericItemIdList)
+        $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
         ForEach ($item in $itemsToProcess)
         {
             $itemIds.Add($item.Id)
@@ -1881,7 +1986,7 @@ Function ProcessFolder()
                 {
                     ProcessItem $fullItem.Item
                 }
-                $itemIds = [Activator]::CreateInstance($genericItemIdList)
+                $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
 
             }
             if ($i%10 -eq 0)
@@ -1889,7 +1994,7 @@ Function ProcessFolder()
                 Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
             }
         }
-        if ($itemIds.Count -ge 0)
+        if ($itemIds.Count -gt 0)
         {
             # Process the remaining items
             $fullItems = $script:service.BindToItems( $itemIds, $script:RequiredPropSet )
@@ -1898,8 +2003,7 @@ Function ProcessFolder()
             {
                 ProcessItem $fullItem.Item
             }
-            $itemIds = [Activator]::CreateInstance($genericItemIdList)
-
+            $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
         }
     }
 
