@@ -12,6 +12,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+# TODO:
+# 1. Add date range.
+# 2. Add email address matching.
+
 param (
     [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
     [ValidateNotNullOrEmpty()]
@@ -62,8 +66,20 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have recipients not from the listed domains will be matched.")]
     $RecipientsNotFromDomains,
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have recipients not from the listed addresses will be matched.")]
+    $RecipientsNotFromAddresses,
+
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have recipients from the listed domains will be matched.")]
     $RecipientsFromDomains,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, CC recipients will not be checked for domain or email address matches.")]
+    $ExcludeCCRecipients,
+
+    [Parameter(Mandatory=$False,HelpMessage="Only processes items created after this date.")]
+    [datetime]$CreatedAfter,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Only processes items created before this date.")]
+    [datetime]$CreatedBefore,
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have values in the given properties will be updated.")]
     $PropertiesMustExist,
@@ -129,7 +145,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.1.9"
+$script:ScriptVersion = "1.2.0"
 
 if ($ForceTLS12)
 {
@@ -139,6 +155,9 @@ else
 {
     Write-Host "If having connection/auth issues for Exchange Online or hybrid, you may need -ForceTLS12 switch" -ForegroundColor Yellow
 }
+
+
+$script:PR_CREATION_TIME = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3007, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime)
 
 # Define our functions
 
@@ -1495,14 +1514,61 @@ function ItemPropertiesMatchRequirements($item)
     return $true    
 }
 
+Function ItemMatchesDateRequirement
+{
+    param ($item)
+
+    # Check if we have creation date criteria
+    $createdTime = $null
+    if ($item.ExtendedProperties.Count -gt 0)
+    {
+        foreach ($prop in $item.ExtendedProperties)
+        {
+            if ($prop.PropertyDefinition -eq $script:PR_CREATION_TIME)
+            {
+                $createdTime = $prop.Value
+                LogVerbose "[ItemMatchesDateRequirement]Folder created: $createdTime"
+            }
+        }
+    }
+
+    if ($createdTime -eq $null)
+    {
+        # If we can't read the creation time, we assume it doesn't match our criteria
+        LogVerbose "[ItemMatchesDateRequirement]Unable to retrieve PR_CREATION_TIME: $($item.Subject)"
+        return $false
+    }
+
+    if ($CreatedAfter)
+    {
+        if ($createdTime -lt $CreatedAfter)
+        {
+            LogVerbose "[ItemMatchesDateRequirement]Folder does not match CreatedAfter requirement: $($item.Subject)"
+            return $false
+        }
+    }
+    if ($CreatedBefore)
+    {
+        if ($createdTime -gt $CreatedBefore)
+        {
+            LogVerbose "[ItemMatchesDateRequirement]Folder does not match CreatedBefore requirement: $($item.Subject)"
+            return $false
+        }
+    }
+    return $true
+}
+
 Function InitRecipientMatchInfo()
 {
     $script:filterRecipients = $false
-    if ($RecipientsNotFromDomains -or $RecipientsFromDomains)
+    if ($RecipientsNotFromDomains -or $RecipientsFromDomains -or $RecipientsNotFromAddresses)
     {
         # We have recipient filters, so ensure we get recipient properties and initialise our checks
         $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::ToRecipients)
-        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::CcRecipients)
+        if (!$ExcludeCCRecipients)
+        {
+            $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::CcRecipients)
+        }
         $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
         $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
         $script:filterRecipients = $true
@@ -1527,12 +1593,19 @@ Function ItemMatchesRecipientRequirements($item)
             if ($recipient.RoutingType -eq "SMTP")
             {
                 $recipientSMTPAddress = $recipient.Address
-                $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
-                $recipientDomains += $recipientDomain.ToLower()
+                if ($RecipientsNotFromAddresses)
+                {
+                    # If we have specific recipient addresses specified, we check those here and exclude from further checks
+                    if (!$RecipientsNotFromAddresses.Contains($recipientSMTPAddress.ToLower()))
+                    {
+                        $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
+                        $recipientDomains += $recipientDomain.ToLower()
+                    }
+                }
             }
         }
     }
-    if ($item.CcRecipients.Count -gt 0)
+    if (!$ExcludeCCRecipients -and $item.CcRecipients.Count -gt 0)
     {
         foreach ($recipient in $item.CcRecipients)
         {
@@ -1593,6 +1666,7 @@ Function ProcessItem()
 
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
     if ( -not (ItemMatchesRecipientRequirements($item)) ) { return }
+    if ( -not (ItemMatchesDateRequirement($item)) ) { return }    
 
     LogVerbose "Processing item: $($item.Subject)"
     $script:itemsMatched++
@@ -1779,6 +1853,11 @@ Function InitialiseItemPropertySet()
     }
     $script:RequiredPropSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,[Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject,
         [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsRead,[Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,[Microsoft.Exchange.WebServices.Data.ContactSchema]::HasPicture)
+
+    if ($CreatedAfter -or $CreatedBefore)
+    {
+        $script:RequiredPropSet.Add($script:PR_CREATION_TIME)
+    }
 
     if ($script:deleteItemPropsEws -ne $null) # We retrieve any properties that we want to delete
     {
@@ -1987,11 +2066,8 @@ Function ProcessFolder()
                     ProcessItem $fullItem.Item
                 }
                 $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
-
-            }
-            if ($i%10 -eq 0)
-            {
                 Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
+
             }
         }
         if ($itemIds.Count -gt 0)
@@ -2004,6 +2080,7 @@ Function ProcessFolder()
                 ProcessItem $fullItem.Item
             }
             $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
+            Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
         }
     }
 
