@@ -12,9 +12,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-# TODO:
-# 1. Add date range.
-# 2. Add email address matching.
 
 param (
     [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
@@ -145,7 +142,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.0"
+$script:ScriptVersion = "1.2.1"
 
 if ($ForceTLS12)
 {
@@ -156,8 +153,6 @@ else
     Write-Host "If having connection/auth issues for Exchange Online or hybrid, you may need -ForceTLS12 switch" -ForegroundColor Yellow
 }
 
-
-$script:PR_CREATION_TIME = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3007, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime)
 
 # Define our functions
 
@@ -1518,6 +1513,11 @@ Function ItemMatchesDateRequirement
 {
     param ($item)
 
+    if (!$CreatedAfter -and !$CreatedBefore)
+    {
+        return $true
+    }
+
     # Check if we have creation date criteria
     $createdTime = $null
     if ($item.ExtendedProperties.Count -gt 0)
@@ -1561,6 +1561,9 @@ Function ItemMatchesDateRequirement
 Function InitRecipientMatchInfo()
 {
     $script:filterRecipients = $false
+    $script:wildcardRecipientsNotFromDomains = @()
+    $script:exactRecipientsNotFromDomains = @()
+    
     if ($RecipientsNotFromDomains -or $RecipientsFromDomains -or $RecipientsNotFromAddresses)
     {
         # We have recipient filters, so ensure we get recipient properties and initialise our checks
@@ -1572,7 +1575,26 @@ Function InitRecipientMatchInfo()
         $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
         $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
         $script:filterRecipients = $true
+
+        if ($RecipientsNotFromDomains)
+        {
+            # We split wildcard domain matches into a separate list as these need special handling.  The only support wildcard format is *.domain.com
+
+            foreach ($notFromDomain in $RecipientsNotFromDomains)
+            {
+                if ($notFromDomain.StartsWith("*."))
+                {
+                    # Wildcard domain match
+                    $script:wildcardRecipientsNotFromDomains += $notFromDomain.Substring(1).ToLower()
+                }
+                else
+                {
+                    $script:exactRecipientsNotFromDomains += $notFromDomain.ToLower()
+                }
+            }
+        }
     }
+    #$global:exact = $script:exactRecipientsNotFromDomains
 }
 
 Function ItemMatchesRecipientRequirements($item)
@@ -1585,6 +1607,8 @@ Function ItemMatchesRecipientRequirements($item)
 
     # Get the domain part of each recipient
     $recipientDomains = @()
+
+    # Add check for *.domain.com
 
     if ($item.ToRecipients.Count -gt 0)
     {
@@ -1617,11 +1641,24 @@ Function ItemMatchesRecipientRequirements($item)
             }
         }
     }
+
+    # Add sender to the list of recipients for testing
     if ($item.Sender.RoutingType -eq "SMTP")
     {
-        $recipientSMTPAddress = $item.Sender.Address
-        $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
-        $recipientDomains += $recipientDomain.ToLower()
+        $senderSMTPAddress = $item.Sender.Address
+        $senderDomain = $senderSMTPAddress.Substring($senderSMTPAddress.IndexOf('@')+1)
+        if ($RecipientsNotFromAddresses)
+        {
+            # If we have specific recipient addresses specified, we check the sender doesn't match those
+            if (!$RecipientsNotFromAddresses.Contains($item.Sender.Address.ToLower()))
+            {
+                $recipientDomains += $senderDomain.ToLower()
+            }
+        }
+        else
+        {
+            $recipientDomains += $senderDomain.ToLower()
+        }
     }
 
     $recipientMatch = $false
@@ -1630,10 +1667,19 @@ Function ItemMatchesRecipientRequirements($item)
         # If any recipients are not from the given domains, then this message matches our filter
         foreach ($checkDomain in $recipientDomains)
         {
-            if (-not ($RecipientsNotFromDomains.Contains($checkDomain)) )
+            $wildcardMatch = $false
+            foreach ($wildcardDomain in $script:wildcardRecipientsNotFromDomains)
             {
-                $recipientMatch = $true
-                break
+                if ( $checkDomain.EndsWith($wildcardDomain) )
+                {
+                    $wildcardMatch = $true
+                    break
+                }
+            }
+
+            if (!$wildcardMatch -and -not ($script:exactRecipientsNotFromDomains.Contains($checkDomain)) )
+            {
+                return $true
             }
         }
     }
@@ -2226,7 +2272,8 @@ if (!(LoadEWSManagedAPI))
     Write-Host "Use the latest version available"
 	Exit
 }
-  
+
+$script:PR_CREATION_TIME = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3007, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime) 
 
 Write-Host ""
 CreatePropLists
