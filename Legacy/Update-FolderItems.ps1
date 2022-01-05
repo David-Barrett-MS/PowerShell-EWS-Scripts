@@ -72,6 +72,15 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, CC recipients will not be checked for domain or email address matches.")]
     $ExcludeCCRecipients,
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items where the sender is not from one of the listed domains will be matched.")]
+    $SenderNotFromDomains,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items where the sender is not from one of the listed addresses will be matched.")]
+    $SenderNotFromAddresses,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items where the sender is from one of the listed domains will be matched.")]
+    $SenderFromDomains,
+
     [Parameter(Mandatory=$False,HelpMessage="Only processes items created after this date.")]
     [datetime]$CreatedAfter,
 	
@@ -100,7 +109,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
     [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 
-    [Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id of the tenant being accessed.")]
     [string]$OAuthTenantId = "",
 
     [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
@@ -142,7 +151,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.1"
+$script:ScriptVersion = "1.2.2"
 
 if ($ForceTLS12)
 {
@@ -1563,17 +1572,13 @@ Function InitRecipientMatchInfo()
     $script:filterRecipients = $false
     $script:wildcardRecipientsNotFromDomains = @()
     $script:exactRecipientsNotFromDomains = @()
-    
+    $script:wildcardSenderNotFromDomains = @()
+    $script:exactSenderNotFromDomains = @()    
+
     if ($RecipientsNotFromDomains -or $RecipientsFromDomains -or $RecipientsNotFromAddresses)
     {
         # We have recipient filters, so ensure we get recipient properties and initialise our checks
-        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::ToRecipients)
-        if (!$ExcludeCCRecipients)
-        {
-            $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::CcRecipients)
-        }
-        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
-        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
+
         $script:filterRecipients = $true
 
         if ($RecipientsNotFromDomains)
@@ -1586,6 +1591,8 @@ Function InitRecipientMatchInfo()
                 {
                     # Wildcard domain match
                     $script:wildcardRecipientsNotFromDomains += $notFromDomain.Substring(1).ToLower()
+                    # We also need to add the main domain to the exact match (otherwise we won't match the main domain, only sub-domains)
+                    $script:exactRecipientsNotFromDomains += $notFromDomain.Substring(2).ToLower()
                 }
                 else
                 {
@@ -1594,7 +1601,43 @@ Function InitRecipientMatchInfo()
             }
         }
     }
-    #$global:exact = $script:exactRecipientsNotFromDomains
+
+    if ($SenderNotFromDomains -or $SenderFromDomains -or $SenderNotFromAddresses)
+    {
+        # We have sender filters
+        $script:filterRecipients = $true
+
+        if ($SenderNotFromDomains)
+        {
+            # We split wildcard domain matches into a separate list as these need special handling.  The only support wildcard format is *.domain.com
+
+            foreach ($notFromDomain in $SenderNotFromDomains)
+            {
+                if ($notFromDomain.StartsWith("*."))
+                {
+                    # Wildcard domain match
+                    $script:wildcardSenderNotFromDomains += $notFromDomain.Substring(1).ToLower()
+                    # We also need to add the main domain to the exact match (otherwise we won't match the main domain, only sub-domains)
+                    $script:exactSenderNotFromDomains += $notFromDomain.Substring(2).ToLower()
+                }
+                else
+                {
+                    $script:exactSenderNotFromDomains += $notFromDomain.ToLower()
+                }
+            }
+        }
+    }
+
+    if ($script:filterRecipients)
+    {
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::ToRecipients)
+        if (!$ExcludeCCRecipients)
+        {
+            $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::CcRecipients)
+        }
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
+    }
 }
 
 Function ItemMatchesRecipientRequirements($item)
@@ -1604,11 +1647,41 @@ Function ItemMatchesRecipientRequirements($item)
         return $true
     }
 
+    # Perform sender checks
+    $senderSMTPAddress = $item.Sender.Address.ToLower()
+    $senderDomain = $senderSMTPAddress.Substring($senderSMTPAddress.IndexOf('@')+1)
+    if ($SenderNotFromDomains)
+    {
+        # If the sender is not from one of the given domains, then this message matches our filter
+        $wildcardMatch = $false
+        foreach ($wildcardDomain in $script:wildcardSenderNotFromDomains)
+        {
+            if ( $senderDomain.EndsWith($wildcardDomain) )
+            {
+                $wildcardMatch = $true
+                break
+            }
+        }
+
+        if (!$wildcardMatch -and -not ($script:exactSenderNotFromDomains.Contains($senderDomain)) )
+        {
+            if ($SenderNotFromAddresses)
+            {
+                # If we have specific recipient addresses specified, we check the sender doesn't match those
+                if (!$SenderNotFromAddresses.Contains($senderSMTPAddress))
+                {
+                    return $true
+                }
+            }
+            else
+            {
+                return $true
+            }
+        }
+    }
 
     # Get the domain part of each recipient
     $recipientDomains = @()
-
-    # Add check for *.domain.com
 
     if ($item.ToRecipients.Count -gt 0)
     {
@@ -1639,25 +1712,6 @@ Function ItemMatchesRecipientRequirements($item)
                 $recipientDomain = $recipientSMTPAddress.Substring($recipientSMTPAddress.IndexOf('@')+1)
                 $recipientDomains += $recipientDomain.ToLower()
             }
-        }
-    }
-
-    # Add sender to the list of recipients for testing
-    if ($item.Sender.RoutingType -eq "SMTP")
-    {
-        $senderSMTPAddress = $item.Sender.Address
-        $senderDomain = $senderSMTPAddress.Substring($senderSMTPAddress.IndexOf('@')+1)
-        if ($RecipientsNotFromAddresses)
-        {
-            # If we have specific recipient addresses specified, we check the sender doesn't match those
-            if (!$RecipientsNotFromAddresses.Contains($item.Sender.Address.ToLower()))
-            {
-                $recipientDomains += $senderDomain.ToLower()
-            }
-        }
-        else
-        {
-            $recipientDomains += $senderDomain.ToLower()
         }
     }
 
