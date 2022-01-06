@@ -151,7 +151,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.2"
+$script:ScriptVersion = "1.2.3"
 
 if ($ForceTLS12)
 {
@@ -1648,34 +1648,46 @@ Function ItemMatchesRecipientRequirements($item)
     }
 
     # Perform sender checks
-    $senderSMTPAddress = $item.Sender.Address.ToLower()
-    $senderDomain = $senderSMTPAddress.Substring($senderSMTPAddress.IndexOf('@')+1)
-    if ($SenderNotFromDomains)
+    $senderSMTPAddress = $null
+    try
     {
-        # If the sender is not from one of the given domains, then this message matches our filter
-        $wildcardMatch = $false
-        foreach ($wildcardDomain in $script:wildcardSenderNotFromDomains)
-        {
-            if ( $senderDomain.EndsWith($wildcardDomain) )
-            {
-                $wildcardMatch = $true
-                break
-            }
-        }
+        $senderSMTPAddress = $item.Sender.Address.ToLower()
+    }
+    catch
+    {
+        $script:LastError = $Error[0]
+    }
 
-        if (!$wildcardMatch -and -not ($script:exactSenderNotFromDomains.Contains($senderDomain)) )
+    if (![string]::IsNullOrEmpty($senderSMTPAddress))
+    {
+        $senderDomain = $senderSMTPAddress.Substring($senderSMTPAddress.IndexOf('@')+1)
+        if ($SenderNotFromDomains)
         {
-            if ($SenderNotFromAddresses)
+            # If the sender is not from one of the given domains, then this message matches our filter
+            $wildcardMatch = $false
+            foreach ($wildcardDomain in $script:wildcardSenderNotFromDomains)
             {
-                # If we have specific recipient addresses specified, we check the sender doesn't match those
-                if (!$SenderNotFromAddresses.Contains($senderSMTPAddress))
+                if ( $senderDomain.EndsWith($wildcardDomain) )
+                {
+                    $wildcardMatch = $true
+                    break
+                }
+            }
+
+            if (!$wildcardMatch -and -not ($script:exactSenderNotFromDomains.Contains($senderDomain)) )
+            {
+                if ($SenderNotFromAddresses)
+                {
+                    # If we have specific recipient addresses specified, we check the sender doesn't match those
+                    if (!$SenderNotFromAddresses.Contains($senderSMTPAddress))
+                    {
+                        return $true
+                    }
+                }
+                else
                 {
                     return $true
                 }
-            }
-            else
-            {
-                return $true
             }
         }
     }
@@ -1683,7 +1695,7 @@ Function ItemMatchesRecipientRequirements($item)
     # Get the domain part of each recipient
     $recipientDomains = @()
 
-    if ($item.ToRecipients.Count -gt 0)
+    if ($item.ToRecipients -ne $null -and $item.ToRecipients.Count -gt 0)
     {
         foreach ($recipient in $item.ToRecipients)
         {
@@ -1702,7 +1714,7 @@ Function ItemMatchesRecipientRequirements($item)
             }
         }
     }
-    if (!$ExcludeCCRecipients -and $item.CcRecipients.Count -gt 0)
+    if (!$ExcludeCCRecipients -and $item.CcRecipients -ne $null -and $item.CcRecipients.Count -gt 0)
     {
         foreach ($recipient in $item.CcRecipients)
         {
@@ -1716,6 +1728,12 @@ Function ItemMatchesRecipientRequirements($item)
     }
 
     $recipientMatch = $false
+    if ($recipientDomains.Count -lt 1)
+    {
+        # No recipients to check
+        return $false
+    }
+
     if ($RecipientsNotFromDomains)
     {
         # If any recipients are not from the given domains, then this message matches our filter
