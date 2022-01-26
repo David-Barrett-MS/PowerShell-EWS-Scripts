@@ -63,7 +63,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, the text to be prepended will be modified per field values.  e.g. <!-- %ORIGINALSENDER% --> will be replaced with the original sender email.")]
     [switch]$ResendUpdatePrependTextFields,
 
-    [Parameter(Mandatory=$False,HelpMessage="Resends the message to the recipient declared in the message Received: header (if present)")]
+    [Parameter(Mandatory=$False,HelpMessage="Resends the message to the recipient declared in the message Received: header (if present).")]
     [switch]$ResendToForInReceivedHeader,
 
     [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted")]
@@ -172,7 +172,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.4"
+$script:ScriptVersion = "1.2.5"
 
 if ($ForceTLS12)
 {
@@ -1898,7 +1898,7 @@ function ResendItem()
                 # To do this, we need to save the item and then reload it so that we can retrieve the message body
                 $resendMessage.Save()
                 $itemSaved = $true
-                $resendMessage = [Microsoft.Exchange.WebServices.Data.EmailMessage]::Bind($script:service, $resendMessage.Id)
+                $resendMessage = ThrottledItemBind($resendMessage.Id)
                 $prependText = $ResendPrependText
 
                 if ($ResendUpdatePrependTextFields)
@@ -1947,7 +1947,7 @@ function ResendItem()
                     }
                     else
                     {
-                        $resendMessage.Update([Microsoft.Exchange.WebServices.Data.ConflictResolutionMode]::AlwaysOverwrite, $true)
+                        ThrottledItemUpdate($resendMessage)
                     }
                 } catch {}
                 if (!(ErrorReported("ResendTo")))
@@ -2227,6 +2227,7 @@ Function InitialiseItemPropertySet()
     if ($Resend)
     {
         $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::MimeContent)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::Body)
         if ($ResendUpdatePrependTextFields)
         {
             $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent)
