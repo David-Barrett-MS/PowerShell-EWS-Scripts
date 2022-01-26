@@ -48,7 +48,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Actions will only apply to contact objects that have the given SMTP address as their email address.  Supports multiple SMTP addresses passed as an array.")]
     $MatchContactAddresses,
 
-    [Parameter(Mandatory=$False,HelpMessage="Resends the message (resend options must also be set)")]
+    [Parameter(Mandatory=$False,HelpMessage="Resends the message (resend options must also be set).")]
     [switch]$Resend,
 
     [Parameter(Mandatory=$False,HelpMessage="Creates a draft of the message that will be resent (in the Drafts folder of the mailbox).  Message will not be sent.")]
@@ -117,7 +117,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If set, a separate GetItem request is sent to retrieve each item.  Much slower (batch processing is used otherwise), but may need to be used if querying large properties.")]
     [switch]$LoadItemsIndividually,
 
-    [Parameter(Mandatory=$False,HelpMessage="If this is set to any value higher than 0, then the script will go into -WhatIf mode once that many items have been processed")]
+    [Parameter(Mandatory=$False,HelpMessage="If this is set to any value higher than 0, then the script will go into -WhatIf mode once that many items have been processed.")]
     $MaximumNumberOfItemsToProcess = 0,
 
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
@@ -1959,7 +1959,7 @@ function ResendItem()
             {
                 try
                 {
-                    #$resendMessage.Send()
+                    $resendMessage.Send()
                 }
                 catch {}
                 if (!(ErrorReported("ResendTo")))
