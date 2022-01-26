@@ -1,7 +1,7 @@
 #
 # Update-FolderItems.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016-2021. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2016-2022. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -47,6 +47,24 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="Actions will only apply to contact objects that have the given SMTP address as their email address.  Supports multiple SMTP addresses passed as an array.")]
     $MatchContactAddresses,
+
+    [Parameter(Mandatory=$False,HelpMessage="Resends the message (resend options must also be set)")]
+    [switch]$Resend,
+
+    [Parameter(Mandatory=$False,HelpMessage="Creates a draft of the message that will be resent (in the Drafts folder of the mailbox).  Message will not be sent.")]
+    [switch]$ResendCreateDraftOnly,
+
+    [Parameter(Mandatory=$False,HelpMessage="Sets the sender for the resent message.")]
+    $ResendFrom = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="Prepends the provided text to the resent message body.")]
+    $ResendPrependText = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, the text to be prepended will be modified per field values.  e.g. <!-- %ORIGINALSENDER% --> will be replaced with the original sender email.")]
+    [switch]$ResendUpdatePrependTextFields,
+
+    [Parameter(Mandatory=$False,HelpMessage="Resends the message to the recipient declared in the message Received: header (if present)")]
+    [switch]$ResendToForInReceivedHeader,
 
     [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted")]
     [switch]$DeleteContactPhoto,
@@ -98,6 +116,9 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If set, a separate GetItem request is sent to retrieve each item.  Much slower (batch processing is used otherwise), but may need to be used if querying large properties.")]
     [switch]$LoadItemsIndividually,
+
+    [Parameter(Mandatory=$False,HelpMessage="If this is set to any value higher than 0, then the script will go into -WhatIf mode once that many items have been processed")]
+    $MaximumNumberOfItemsToProcess = 0,
 
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credentials")]
@@ -151,7 +172,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.3"
+$script:ScriptVersion = "1.2.4"
 
 if ($ForceTLS12)
 {
@@ -159,7 +180,7 @@ if ($ForceTLS12)
 }
 else
 {
-    Write-Host "If having connection/auth issues for Exchange Online or hybrid, you may need -ForceTLS12 switch" -ForegroundColor Yellow
+    Write-Host "If having connection/auth issues for Exchange Online or hybrid, you may need -ForceTLS12 switch" -ForegroundColor Gray
 }
 
 
@@ -362,7 +383,7 @@ function GetTokenWithKey
         Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
         exit # Failed to obtain a token
     }
-    $Impersonate = $true
+    $script:Impersonate = $true
 }
 
 function GetOAuthCredentials
@@ -841,7 +862,7 @@ function CreateService($smtpAddress)
     }
     else
     {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
+        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2013)
     }
 
     # Do we need to use OAuth?
@@ -1605,7 +1626,7 @@ Function InitRecipientMatchInfo()
     if ($SenderNotFromDomains -or $SenderFromDomains -or $SenderNotFromAddresses)
     {
         # We have sender filters
-        $script:filterRecipients = $true
+        $script:filterSender = $true
 
         if ($SenderNotFromDomains)
         {
@@ -1626,6 +1647,8 @@ Function InitRecipientMatchInfo()
                 }
             }
         }
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
     }
 
     if ($script:filterRecipients)
@@ -1635,14 +1658,12 @@ Function InitRecipientMatchInfo()
         {
             $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::CcRecipients)
         }
-        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
-        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
     }
 }
 
 Function ItemMatchesRecipientRequirements($item)
 {
-    if ( !$script:filterRecipients)
+    if ( !$script:filterRecipients -and !$script:filterSender)
     {
         return $true
     }
@@ -1658,6 +1679,8 @@ Function ItemMatchesRecipientRequirements($item)
         $script:LastError = $Error[0]
     }
 
+
+    # Sender checks
     if (![string]::IsNullOrEmpty($senderSMTPAddress))
     {
         $senderDomain = $senderSMTPAddress.Substring($senderSMTPAddress.IndexOf('@')+1)
@@ -1690,6 +1713,18 @@ Function ItemMatchesRecipientRequirements($item)
                 }
             }
         }
+        elseif ($SenderNotFromAddresses)
+        {
+            if ($SenderNotFromAddresses.Contains($senderSMTPAddress))
+            {
+                return $false
+            }
+        }
+    }
+
+    if (!$script:filterRecipients)
+    {
+        return $true
     }
 
     # Get the domain part of each recipient
@@ -1772,6 +1807,170 @@ Function ItemMatchesRecipientRequirements($item)
     return $recipientMatch
 }
 
+function ResendItem()
+{
+    # Attempt to resend the item
+    $item = $args[0]
+
+    $resendTo = ""
+
+    if ($ResendToForInReceivedHeader)
+    {
+        # We need to parse the receieved headers to determine the original recipient of this message.  The headers are included in the MIME content, so we read from there
+        $mimeContent = $item.MimeContent.ToString()
+        $mimeHeaders = ""
+        $mimeHeadersEnd = $mimeContent.IndexOf("`r`n`r`n")
+        if ($mimeHeadersEnd -gt -1)
+        {
+            $mimeHeaders = $mimeContent.Substring(0,$mimeHeadersEnd)
+        }
+        if ([String]::IsNullOrEmpty($mimeHeaders))
+        {
+            Log "[ResendItem] Failed to read MIME headers" Red
+            return
+        }
+
+        # Parse the MIME headers
+        $originalForAddress = ""
+        $headerLines = $mimeHeaders -split "`r`n"
+        $receivedForHeader = ""
+        for ( $i = $headerLines.Count-1; $i -ge 0; $i--)
+        {
+            if ($headerLines[$i].StartsWith("Received:"))
+            {
+                $receivedForHeader = $headerLines[$i]
+                $j = 1
+                while ($headerLines[$i+$j].StartsWith("`t"))
+                {
+                    $receivedForHeader = "$receivedForHeader$($headerLines[$i+$j].SubString(1))"
+                    if ($headerLines[$i+$j].StartsWith("`tfor <"))
+                    {
+                        # This is the for address we need to extract
+                        $resendToAddressEnd = $headerLines[$i+$j].IndexOf(">")
+                        if ($resendToAddressEnd -gt 6)
+                        {
+                            $resendTo = $headerLines[$i+$j].Substring(6, $resendToAddressEnd-6)
+                        }
+                        $j = 0
+                        $i = -1
+                    }
+                    else
+                    {
+                        $j++
+                    }
+                }
+            }
+            if (![String]::IsNullOrEmpty($resendTo))
+            {
+                break
+            }
+        }
+
+        if ([String]::IsNullOrEmpty($resendTo))
+        {
+            Log "[ResendTo] Failed to determine recipient to send to" Red
+            return
+        }
+
+        if ($WhatIf)
+        {
+            Log "[ResendTo] Would resend message to $resendTo"
+        }
+        else
+        {
+            LogVerbose "[ResendTo] Resending message to $resendTo"
+            $resendMessage = New-Object Microsoft.Exchange.WebServices.Data.EmailMessage -ArgumentList $script:service
+            $resendMessage.MimeContent = $item.MimeContent
+            $resendMessage.ToRecipients.Clear()
+            $resendMessage.ToRecipients.Add($resendTo) | out-null
+
+            if (![String]::IsNullOrEmpty($ResendFrom))
+            {
+                LogVerbose "[ResendTo] Setting sender to $ResendFrom"
+                $resendMessage.Sender = $ResendFrom
+                $resendMessage.From = $ResendFrom
+            }        
+
+            $itemSaved = $false
+            if (![String]::IsNullOrEmpty($ResendPrependText))
+            {
+                # Prepend the given text to the message body
+                # To do this, we need to save the item and then reload it so that we can retrieve the message body
+                $resendMessage.Save()
+                $itemSaved = $true
+                $resendMessage = [Microsoft.Exchange.WebServices.Data.EmailMessage]::Bind($script:service, $resendMessage.Id)
+                $prependText = $ResendPrependText
+
+                if ($ResendUpdatePrependTextFields)
+                {
+                    # Replace any fields that are defined in the prepended text
+                    # <!-- %ORIGINALSENDER% -->
+                    # <!-- %ORIGINALRECIPIENTS% -->
+                    # <!-- %ORIGINALSENTTIME% -->
+
+                    $prependText = $prependText.Replace("<!-- %ORIGINALSENDER% -->", $item.From)
+                    $prependText = $prependText.Replace("<!-- %ORIGINALRECIPIENTS% -->", $resendTo)
+                    $prependText = $prependText.Replace("<!-- %ORIGINALSENTTIME% -->", $item.DateTimeSent)
+                }
+
+                if ($resendMessage.Body.BodyType -eq [Microsoft.Exchange.WebServices.Data.BodyType]::HTML)
+                {
+                    # Update HTML message body
+                    LogVerbose "[ResendTo] Body type is HTML" -ForegroundColor Cyan
+                    $startOfHTMLBody = $resendMessage.Body.Text.IndexOf("<body")
+                    if ($startOfHTMLBody -gt -1)
+                    {
+                        $insertionPoint = $resendMessage.Body.Text.IndexOf(">",$startOfHTMLBody)+1
+                        if ($insertionPoint -gt -1)
+                        {
+                            LogVerbose "[ResendTo] Text prepended" -ForegroundColor Cyan
+                            $resendMessage.Body.Text = "$($resendMessage.Body.Text.Substring(0, $insertionPoint))<p>$prependText</p>$($resendMessage.Body.Text.Substring($insertionPoint))"
+                        }
+                    }
+                }
+                else
+                {
+                    # Update text message body
+                    LogVerbose "[ResendTo] Body type is text, prepending text" -ForegroundColor Cyan
+                    $resendMessage.Body.Text = "$prependText`r`n`r`n$($resendMessage.Body.Text)"
+                }
+            }
+                          
+
+            if ($ResendCreateDraftOnly)
+            {
+                try
+                {
+                    if (!$itemSaved)
+                    {
+                        $resendMessage.Save()
+                    }
+                    else
+                    {
+                        $resendMessage.Update([Microsoft.Exchange.WebServices.Data.ConflictResolutionMode]::AlwaysOverwrite, $true)
+                    }
+                } catch {}
+                if (!(ErrorReported("ResendTo")))
+                {
+                    Log "[ResendTo] Draft Resend message created" Green
+                }
+            }
+            else
+            {
+                try
+                {
+                    #$resendMessage.Send()
+                }
+                catch {}
+                if (!(ErrorReported("ResendTo")))
+                {
+                    Log "[ResendTo] Message resent to $resendTo" Green
+                }
+            }
+        }
+    }
+}
+
 Function ProcessItem()
 {
 	# Apply updates to the given item
@@ -1788,12 +1987,29 @@ Function ProcessItem()
 
     LogVerbose "Processing item: $($item.Subject)"
     $script:itemsMatched++
+
+    if ($MaximumNumberOfItemsToProcess -gt 0 -and !$WhatIf)
+    {
+        if ($script:itemsMatched -gt $MaximumNumberOfItemsToProcess)
+        {
+            # We've processed maximum number of items, so turn -WhatIf on
+            Log "$MaximumNumberOfItemsToProcess items processed, enabling -WhatIf" Green
+            $script:WhatIf = $true
+        }
+    }
+
     if ($ListMatches)
     {
         $item
     }
 
-    # Check for delete first of all
+    # Check for Resend
+    if ($Resend)
+    {
+        ResendItem $item
+    }
+
+    # Check for delete
     if ($Delete)
     {
         if (-not $WhatIf)
@@ -1984,7 +2200,7 @@ Function InitialiseItemPropertySet()
             $script:RequiredPropSet.Add($deleteProperty)
         }
     }
-    if ($script:propertiesMustExistEws -ne $null) # We retrieve any properties that must exist
+    if ($script:propertiesMustExistEws -ne $null) # We retrieve any properties that must exist (so that we can tell if they exist!)
     {
         foreach ($requiredProperty in $script:propertiesMustExistEws)
         {
@@ -2007,6 +2223,15 @@ Function InitialiseItemPropertySet()
     }
 
     InitRecipientMatchInfo
+
+    if ($Resend)
+    {
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::MimeContent)
+        if ($ResendUpdatePrependTextFields)
+        {
+            $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent)
+        }
+    }
 }
 
 Function ProcessFolder()
@@ -2222,6 +2447,7 @@ function ProcessMailbox()
 	}
 
     $script:throttlingDelay = 0
+    $script:itemsProcessedCount = 0
 
     # Bind to root folder
     $mbx = New-Object Microsoft.Exchange.WebServices.Data.Mailbox( $Mailbox )
@@ -2279,9 +2505,20 @@ function ProcessMailbox()
             {
                 # Well known folder specified (could be different name depending on language, so we bind to it using WellKnownFolderName enumeration)
                 $wkf = $fPath.SubString(20)
+                $restOfPath = ""
+                $restOfPathStart = $wkf.IndexOf("\")
+                if ($restOfPathStart -gt -1)
+                {
+                    $restOfPath = $wkf.SubString($restOfPathStart+1)
+                    $wkf = $wkf.SubString(0, $restOfPathStart)
+                }
                 Write-Verbose "Attempting to bind to well known folder: $wkf"
                 $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::$wkf, $mbx )
                 $Folder = ThrottledFolderBind($folderId)
+                if ($folder -and ![String]::IsNullOrEmpty($restOfPath))
+                {
+                    $Folder = GetFolder($Folder, $restOfPath, $false)
+                }
             }
             else
             {
