@@ -51,8 +51,11 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="A list of message classes to be processed.  Any that don't match will be ignored.")]
     $IncludedMessageClasses,
 
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be moved `r`n(see https://msdn.microsoft.com/EN-US/library/dn579420(v=exchg.150).aspx)")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be moved `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange )")]
     [string]$SearchFilter,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent from the specified sender will be moved (useful for sorting).  Note that currently only one sender can be specified.")]
+    [string]$OnlyItemsFromSender,
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
     [DateTime]$OnlyItemsCreatedBefore,
@@ -104,7 +107,7 @@ param (
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
 
-    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts).")]
     [switch]$OAuth,
 
     [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
@@ -119,7 +122,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     [string]$OAuthSecretKey = "",
 
-    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Please note that certificate auth requires the MSAL dll to be available.")]
     $OAuthCertificate = $null,
 
     [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
@@ -161,7 +164,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.1"
+$script:ScriptVersion = "1.2.2"
 
 
 # Define our functions
@@ -673,8 +676,6 @@ Function CreateTraceListener($service)
             $service.TraceListener = $script:Tracer
         }
     }
-
-
 }
 
 Function DecreaseBatchSize()
@@ -1312,6 +1313,11 @@ Function MoveItems()
         $searchFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived, $OnlyItemsSentReceivedAfter)
     }
 
+    if (![String]::IsNullOrEmpty($OnlyItemsFromSender))
+    {
+        $searchFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From, $OnlyItemsFromSender)
+    }
+
     if ($searchFilters.Count -gt 0)
     {
         LogVerbose "[MoveItems]Search filters applied: $($searchFilters.Count)"
@@ -1327,7 +1333,8 @@ Function MoveItems()
 	{
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView($PageSize, $Offset, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
 		$View.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,
-            [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeCreated, [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent, [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived)
+            [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeCreated, [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent, [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived,
+            [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
         if ($AssociatedItems)
         {
             $View.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Associated
