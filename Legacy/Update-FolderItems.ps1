@@ -99,6 +99,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items where the sender is from one of the listed domains will be matched.")]
     $SenderFromDomains,
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items where the sender is from one of the listed addresses will be matched.")]
+    $SenderFromAddresses,
+
     [Parameter(Mandatory=$False,HelpMessage="Only processes items created after this date.")]
     [datetime]$CreatedAfter,
 	
@@ -172,7 +175,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.5"
+$script:ScriptVersion = "1.2.6"
 
 if ($ForceTLS12)
 {
@@ -770,6 +773,44 @@ function ThrottledItemBind()
 
     # If we get to this point, we have been unable to bind to the folder
     return $null
+}
+
+function ThrottledItemDelete()
+{
+    param (
+        $item
+    )
+
+    ApplyEWSOAuthCredentials
+
+    $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::MoveToDeletedItems
+    if ($HardDelete)
+    {
+        $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete
+    }
+    try
+    {
+        $item.Delete($deleteMode)
+        LogVerbose "Item deleted"
+        return $True
+    }
+    catch {}
+
+    if (Throttled)
+    {
+        ApplyEWSOAuthCredentials
+        try
+        {
+            $item.Delete($deleteMode)
+            LogVerbose "Item deleted"
+            return $True
+        }
+        catch
+        {
+            Log "Failed to delete item: $($Error[0])" Red
+        }
+    }
+    return $false
 }
 
 function ThrottledItemUpdate()
@@ -1679,7 +1720,6 @@ Function ItemMatchesRecipientRequirements($item)
         $script:LastError = $Error[0]
     }
 
-
     # Sender checks
     if (![string]::IsNullOrEmpty($senderSMTPAddress))
     {
@@ -1934,8 +1974,7 @@ function ResendItem()
                     LogVerbose "[ResendTo] Body type is text, prepending text" -ForegroundColor Cyan
                     $resendMessage.Body.Text = "$prependText`r`n`r`n$($resendMessage.Body.Text)"
                 }
-            }
-                          
+            }                        
 
             if ($ResendCreateDraftOnly)
             {
@@ -1947,8 +1986,9 @@ function ResendItem()
                     }
                     else
                     {
-                        ThrottledItemUpdate($resendMessage)
+                        ThrottledItemUpdate $resendMessage | out-null
                     }
+                    $script:itemsResent++
                 } catch {}
                 if (!(ErrorReported("ResendTo")))
                 {
@@ -1960,6 +2000,7 @@ function ResendItem()
                 try
                 {
                     $resendMessage.Send()
+                    $script:itemsResent++
                 }
                 catch {}
                 if (!(ErrorReported("ResendTo")))
@@ -2014,14 +2055,34 @@ Function ProcessItem()
     {
         if (-not $WhatIf)
         {
-            [void]$script:itemsToDelete.Add($item.Id)
-            Log "`"$($item.Subject)`" added to list of items to be deleted" Gray
+            if (-not $Resend)
+            {
+                [void]$script:itemsToDelete.Add($item.Id)
+                Log "`"$($item.Subject)`" added to list of items to be deleted" Gray
+            }
+            else
+            {
+                # If we are resending, we delete the message immediately instead of batching (so that in the event of an issue, script can rerun and pick up where it left off)
+                if (ThrottledItemDelete $item)
+                {
+                    Log "`"$($item.Subject)`" deleted" Gray
+                    $script:itemsDeleted++
+                }
+                else
+                {
+                    Log "FAILED to delete: $($item.Subject)" Red
+                }
+            }
         }
         else
         {
             Log "`"$($item.Subject)`" would be deleted" Gray
+            if ($MaximumNumberOfItemsToProcess -lt 1)
+            {
+                $script:itemsDeleted++
+            }
         }
-        $script:itemsDeleted++
+
         return # If Delete is specified, any other parameter is irrelevant
     }
 
@@ -2105,7 +2166,7 @@ Function ThrottledBatchDelete()
     }
     $consecutiveErrors = 0
 
-    $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete
+    $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::MoveToDeletedItems
     if ($HardDelete)
     {
         $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete
@@ -2490,6 +2551,7 @@ function ProcessMailbox()
 
     $script:itemsAffected = 0
     $script:itemsDeleted = 0
+    $script:itemsResent = 0
     $script:itemsMatched = 0
 
     # FolderPath can support arrays (list of folders)
@@ -2535,16 +2597,18 @@ function ProcessMailbox()
             }
         }
     }
-    if ($WhatIf)
+    if ($WhatIf -and $MaximumNumberOfItemsToProcess -eq 0)
     {
         Log "$($Mailbox): $($script:itemsMatched) item(s) matched specified criteria"
         Log "$($Mailbox): $($script:itemsAffected) item(s) would be changed (but -WhatIf was specified so no action was taken)"
+        Log "$($Mailbox): $($script:itemsResent) item(s) would be resent (but -WhatIf was specified so no action was taken)"
         Log "$($Mailbox): $($script:itemsDeleted) item(s) would be deleted (but -WhatIf was specified so no action was taken)"
     }
     else
     {
         Log "$($Mailbox): $($script:itemsMatched) item(s) matched specified criteria"
         Log "$($Mailbox): $($script:itemsAffected) item(s) were changed"
+        Log "$($Mailbox): $($script:itemsResent) item(s) were resent"
         Log "$($Mailbox): $($script:itemsDeleted) item(s) were deleted"
     }
 }
