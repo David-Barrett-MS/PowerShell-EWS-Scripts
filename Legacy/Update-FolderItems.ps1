@@ -57,6 +57,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Sets the sender for the resent message.")]
     $ResendFrom = "",
 
+    [Parameter(Mandatory=$False,HelpMessage="Sets the recipient for the resent message.")]
+    $ResendTo = "",
+
     [Parameter(Mandatory=$False,HelpMessage="Prepends the provided text to the resent message body.")]
     $ResendPrependText = "",
 
@@ -142,6 +145,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     [string]$OAuthSecretKey = "",
 
+    [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
+    [switch]$OAuthDebug,
+
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     $OAuthCertificate = $null,
 	
@@ -175,7 +181,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.6"
+$script:ScriptVersion = "1.2.7"
 
 if ($ForceTLS12)
 {
@@ -195,12 +201,24 @@ Function LogToFile([string]$Details)
 	"$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())   $Details" | Out-File $LogFile -Append
 }
 
+Function UpdateDetailsWithCallingMethod([string]$Details)
+{
+    $stack = Get-PSCallStack
+    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 of on the stack
+    if (![String]::IsNullOrEmpty($callingFunction))
+    {
+        $Details = "[$callingFunction] $Details"
+    }
+    return $Details
+}
+
 Function Log([string]$Details, [ConsoleColor]$Colour)
 {
     if ($Colour -eq $null)
     {
         $Colour = [ConsoleColor]::White
     }
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Host $Details -ForegroundColor $Colour
     LogToFile $Details
 }
@@ -208,12 +226,14 @@ Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" 
 
 Function LogVerbose([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
     LogToFile $Details
 }
 
 Function LogDebug([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
     LogToFile $Details
 }
@@ -233,11 +253,11 @@ Function ErrorReported($Context)
     $script:LastError = $Error[0]
     if ($Context)
     {
-        Log "Error ($Context): $($Error[0])" Red
+        Log "ERROR ($Context): $($Error[0])" Red
     }
     else
-    {
-        Log "Error: $($Error[0])" Red
+    {        
+        Log "ERROR: $($Error[0])" Red
     }
     return $true
 }
@@ -397,7 +417,7 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ($script:oauthToken -ne $null)
+    if ($script:oauthToken -ne $null -and -not $RenewToken)
     {
         # We already have a token
         if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
@@ -406,10 +426,8 @@ function GetOAuthCredentials
             $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
             return $exchangeCredentials
         }
-
-        # Token needs renewing
-
     }
+    # Token needs renewing
 
     if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
@@ -433,29 +451,29 @@ function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
-    if ( $script:authenticationResult -eq $null ) { return }
+    if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
     if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
     LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
     { 
         Log "OAuth Token renewal failed"
         exit # We no longer have access to the mailbox, so we stop here
     }
 
-    Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    Log "OAuth token successfully renewed; new expiry: $($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in))"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
-            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
+            $service.Credentials = $exchangeCredentials
         }
-        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
 }
 
@@ -715,6 +733,7 @@ function ThrottledFolderBind()
 
     if (Throttled)
     {
+        ApplyEWSOAuthCredentials
         try
         {
             if ($propset -eq $null)
@@ -724,6 +743,10 @@ function ThrottledFolderBind()
             else
             {
                 $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($script:service, $folderId, $propset)
+            }
+            if (-not ($folder -eq $null))
+            {
+                LogVerbose "Successfully bound to $($folderId): $($folder.DisplayName)"
             }
             return $folder
         }
@@ -763,9 +786,14 @@ function ThrottledItemBind()
 
     if (Throttled)
     {
+        ApplyEWSOAuthCredentials
         try
         {
             $item = [Microsoft.Exchange.WebServices.Data.Item]::Bind($script:service, $itemId, $propset)
+            if (-not ($item -eq $null))
+            {
+                LogVerbose "Successfully bound to item $($itemId): $($item.Subject)"
+            }
             return $item             
         }
         catch {}
@@ -1598,7 +1626,7 @@ Function ItemMatchesDateRequirement
             if ($prop.PropertyDefinition -eq $script:PR_CREATION_TIME)
             {
                 $createdTime = $prop.Value
-                LogVerbose "[ItemMatchesDateRequirement]Folder created: $createdTime"
+                LogVerbose "Folder created: $createdTime"
             }
         }
     }
@@ -1606,7 +1634,7 @@ Function ItemMatchesDateRequirement
     if ($createdTime -eq $null)
     {
         # If we can't read the creation time, we assume it doesn't match our criteria
-        LogVerbose "[ItemMatchesDateRequirement]Unable to retrieve PR_CREATION_TIME: $($item.Subject)"
+        LogVerbose "Unable to retrieve PR_CREATION_TIME: $($item.Subject)"
         return $false
     }
 
@@ -1614,7 +1642,7 @@ Function ItemMatchesDateRequirement
     {
         if ($createdTime -lt $CreatedAfter)
         {
-            LogVerbose "[ItemMatchesDateRequirement]Folder does not match CreatedAfter requirement: $($item.Subject)"
+            LogVerbose "Folder does not match CreatedAfter requirement: $($item.Subject)"
             return $false
         }
     }
@@ -1622,7 +1650,7 @@ Function ItemMatchesDateRequirement
     {
         if ($createdTime -gt $CreatedBefore)
         {
-            LogVerbose "[ItemMatchesDateRequirement]Folder does not match CreatedBefore requirement: $($item.Subject)"
+            LogVerbose "Folder does not match CreatedBefore requirement: $($item.Subject)"
             return $false
         }
     }
@@ -1852,8 +1880,6 @@ function ResendItem()
     # Attempt to resend the item
     $item = $args[0]
 
-    $resendTo = ""
-
     if ($ResendToForInReceivedHeader)
     {
         # We need to parse the receieved headers to determine the original recipient of this message.  The headers are included in the MIME content, so we read from there
@@ -1866,11 +1892,12 @@ function ResendItem()
         }
         if ([String]::IsNullOrEmpty($mimeHeaders))
         {
-            Log "[ResendItem] Failed to read MIME headers" Red
-            return
+            Log "Failed to read MIME headers" Red
+            return $false
         }
 
         # Parse the MIME headers
+        # We are looking for the first Received: header that has for <x@x.com> (which should be the original intended recipient)
         $originalForAddress = ""
         $headerLines = $mimeHeaders -split "`r`n"
         $receivedForHeader = ""
@@ -1889,7 +1916,7 @@ function ResendItem()
                         $resendToAddressEnd = $headerLines[$i+$j].IndexOf(">")
                         if ($resendToAddressEnd -gt 6)
                         {
-                            $resendTo = $headerLines[$i+$j].Substring(6, $resendToAddressEnd-6)
+                            $ResendTo = $headerLines[$i+$j].Substring(6, $resendToAddressEnd-6)
                         }
                         $j = 0
                         $i = -1
@@ -1900,116 +1927,143 @@ function ResendItem()
                     }
                 }
             }
-            if (![String]::IsNullOrEmpty($resendTo))
+            if (![String]::IsNullOrEmpty($ResendTo))
             {
                 break
             }
         }
 
-        if ([String]::IsNullOrEmpty($resendTo))
+        if ([String]::IsNullOrEmpty($ResendTo))
         {
-            Log "[ResendTo] Failed to determine recipient to send to" Red
-            return
+            Log "Failed to determine recipient to send to" Red
+            return $false
         }
 
         if ($WhatIf)
         {
-            Log "[ResendTo] Would resend message to $resendTo"
+            Log "Would resend message to $ResendTo"
+            return $true
         }
-        else
+
+        LogVerbose "Resending message to $ResendTo"
+        $resendMessage = New-Object Microsoft.Exchange.WebServices.Data.EmailMessage -ArgumentList $script:service
+        $resendMessage.MimeContent = $item.MimeContent
+        $resendMessage.ToRecipients.Clear()
+        $resendMessage.ToRecipients.Add($ResendTo) | out-null
+
+        if (![String]::IsNullOrEmpty($ResendFrom))
         {
-            LogVerbose "[ResendTo] Resending message to $resendTo"
-            $resendMessage = New-Object Microsoft.Exchange.WebServices.Data.EmailMessage -ArgumentList $script:service
-            $resendMessage.MimeContent = $item.MimeContent
-            $resendMessage.ToRecipients.Clear()
-            $resendMessage.ToRecipients.Add($resendTo) | out-null
+            LogVerbose "Setting sender to $ResendFrom"
+            $resendMessage.Sender = $ResendFrom
+            $resendMessage.From = $ResendFrom
+        }        
 
-            if (![String]::IsNullOrEmpty($ResendFrom))
+        $itemSaved = $false
+        ApplyEWSOAuthCredentials
+        if (![String]::IsNullOrEmpty($ResendPrependText))
+        {
+            # Prepend the given text to the message body
+            # To do this, we need to save the item and then reload it so that we can retrieve the message body
+            try
             {
-                LogVerbose "[ResendTo] Setting sender to $ResendFrom"
-                $resendMessage.Sender = $ResendFrom
-                $resendMessage.From = $ResendFrom
-            }        
-
-            $itemSaved = $false
-            if (![String]::IsNullOrEmpty($ResendPrependText))
-            {
-                # Prepend the given text to the message body
-                # To do this, we need to save the item and then reload it so that we can retrieve the message body
                 $resendMessage.Save()
                 $itemSaved = $true
-                $resendMessage = ThrottledItemBind($resendMessage.Id)
-                $prependText = $ResendPrependText
-
-                if ($ResendUpdatePrependTextFields)
-                {
-                    # Replace any fields that are defined in the prepended text
-                    # <!-- %ORIGINALSENDER% -->
-                    # <!-- %ORIGINALRECIPIENTS% -->
-                    # <!-- %ORIGINALSENTTIME% -->
-
-                    $prependText = $prependText.Replace("<!-- %ORIGINALSENDER% -->", $item.From)
-                    $prependText = $prependText.Replace("<!-- %ORIGINALRECIPIENTS% -->", $resendTo)
-                    $prependText = $prependText.Replace("<!-- %ORIGINALSENTTIME% -->", $item.DateTimeSent)
-                }
-
-                if ($resendMessage.Body.BodyType -eq [Microsoft.Exchange.WebServices.Data.BodyType]::HTML)
-                {
-                    # Update HTML message body
-                    LogVerbose "[ResendTo] Body type is HTML" -ForegroundColor Cyan
-                    $startOfHTMLBody = $resendMessage.Body.Text.IndexOf("<body")
-                    if ($startOfHTMLBody -gt -1)
-                    {
-                        $insertionPoint = $resendMessage.Body.Text.IndexOf(">",$startOfHTMLBody)+1
-                        if ($insertionPoint -gt -1)
-                        {
-                            LogVerbose "[ResendTo] Text prepended" -ForegroundColor Cyan
-                            $resendMessage.Body.Text = "$($resendMessage.Body.Text.Substring(0, $insertionPoint))<p>$prependText</p>$($resendMessage.Body.Text.Substring($insertionPoint))"
-                        }
-                    }
-                }
-                else
-                {
-                    # Update text message body
-                    LogVerbose "[ResendTo] Body type is text, prepending text" -ForegroundColor Cyan
-                    $resendMessage.Body.Text = "$prependText`r`n`r`n$($resendMessage.Body.Text)"
-                }
-            }                        
-
-            if ($ResendCreateDraftOnly)
+            }
+            catch {}
+            if (ErrorReported("ResendItem"))
             {
-                try
+                return $false
+            }
+
+            $resendMessage = ThrottledItemBind($resendMessage.Id)
+            if ($resendMessage -eq $null)
+            {
+                return $false
+            }
+
+            $prependText = $ResendPrependText
+            if ($ResendUpdatePrependTextFields)
+            {
+                # Replace any fields that are defined in the prepended text
+                # <!-- %ORIGINALSENDER% -->
+                # <!-- %ORIGINALRECIPIENTS% -->
+                # <!-- %ORIGINALSENTTIME% -->
+
+                $prependText = $prependText.Replace("<!-- %ORIGINALSENDER% -->", $item.From)
+                $prependText = $prependText.Replace("<!-- %ORIGINALRECIPIENTS% -->", $resendTo)
+                $prependText = $prependText.Replace("<!-- %ORIGINALSENTTIME% -->", $item.DateTimeSent)
+            }
+
+            if ($resendMessage.Body.BodyType -eq [Microsoft.Exchange.WebServices.Data.BodyType]::HTML)
+            {
+                # Update HTML message body
+                LogVerbose "Body type is HTML" -ForegroundColor Cyan
+                $startOfHTMLBody = $resendMessage.Body.Text.IndexOf("<body")
+                if ($startOfHTMLBody -gt -1)
                 {
-                    if (!$itemSaved)
+                    $insertionPoint = $resendMessage.Body.Text.IndexOf(">",$startOfHTMLBody)+1
+                    if ($insertionPoint -gt -1)
                     {
-                        $resendMessage.Save()
+                        LogVerbose "Text prepended" -ForegroundColor Cyan
+                        $resendMessage.Body.Text = "$($resendMessage.Body.Text.Substring(0, $insertionPoint))<p>$prependText</p>$($resendMessage.Body.Text.Substring($insertionPoint))"
                     }
-                    else
-                    {
-                        ThrottledItemUpdate $resendMessage | out-null
-                    }
-                    $script:itemsResent++
-                } catch {}
-                if (!(ErrorReported("ResendTo")))
-                {
-                    Log "[ResendTo] Draft Resend message created" Green
                 }
             }
             else
             {
-                try
+                # Update text message body
+                LogVerbose "Body type is text, prepending text" -ForegroundColor Cyan
+                $resendMessage.Body.Text = "$prependText`r`n`r`n$($resendMessage.Body.Text)"
+            }
+        }                        
+
+        if ($ResendCreateDraftOnly)
+        {
+            try
+            {
+                if (!$itemSaved)
                 {
-                    $resendMessage.Send()
-                    $script:itemsResent++
+                    ApplyEWSOAuthCredentials
+                    try
+                    {
+                        $resendMessage.Save()
+                        $itemSaved = $true
+                    }
+                    catch {}
+                    if (ErrorReported("ResendItem"))
+                    {
+                        return $false
+                    }
                 }
-                catch {}
-                if (!(ErrorReported("ResendTo")))
+                else
                 {
-                    Log "[ResendTo] Message resent to $resendTo" Green
+                    ThrottledItemUpdate $resendMessage | out-null
                 }
+                $script:itemsResent++
+            } catch {}
+            if (!(ErrorReported("ResendItem")))
+            {
+                Log "Draft Resend message created" Green
+                return $true
+            }
+        }
+        else
+        {
+            ApplyEWSOAuthCredentials
+            try
+            {
+                $resendMessage.Send()
+                $script:itemsResent++
+            }
+            catch {}
+            if (!(ErrorReported("ResendItem")))
+            {
+                Log "Message resent to $resendTo" Green
+                return $true
             }
         }
     }
+    return $false
 }
 
 Function ProcessItem()
@@ -2024,7 +2078,12 @@ Function ProcessItem()
 
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
     if ( -not (ItemMatchesRecipientRequirements($item)) ) { return }
-    if ( -not (ItemMatchesDateRequirement($item)) ) { return }    
+    if ( -not (ItemMatchesDateRequirement($item)) ) { return }
+
+    if ($OAuthDebug)
+    {
+        Read-Host "Token expires at $($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)). Press <ENTER> to continue" | out-null
+    }
 
     LogVerbose "Processing item: $($item.Subject)"
     $script:itemsMatched++
@@ -2047,7 +2106,14 @@ Function ProcessItem()
     # Check for Resend
     if ($Resend)
     {
-        ResendItem $item
+        if (!(ResendItem $item))
+        {
+            if ($Delete)
+            {
+                Log "Not deleting item as resend failed" Red
+                return
+            }
+        }
     }
 
     # Check for delete
@@ -2275,7 +2341,7 @@ Function InitialiseItemPropertySet()
     {
         foreach ($propMustMatch in $script:propertiesMustMatchEws.Keys)
         {
-            LogVerbose "[InitialiseItemPropertySet] $propMustMatch"
+            #LogVerbose "$propMustMatch"
             if (-not ($script:RequiredPropSet.Contains($propMustMatch)) )
             {
                 $script:RequiredPropSet.Add($propMustMatch)
@@ -2377,8 +2443,6 @@ Function ProcessFolder()
         LogVerbose "Search query being applied: $SearchFilter"
     }
 
-
-
     Write-Progress -Activity "$progressActivity reading items" -Status "0 items found" -PercentComplete -1
 	while ($MoreItems)
 	{
@@ -2455,16 +2519,16 @@ Function ProcessFolder()
     }
     else
     {
-        # We send GetItem request for 500 items at a time
+        # We send GetItem request for 50 items at a time
 
         $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
         ForEach ($item in $itemsToProcess)
         {
             $itemIds.Add($item.Id)
             $i++
-            if ($itemIds.Count -ge 500)
+            if ($itemIds.Count -ge 50)
             {
-                # We have 500 Ids in our list, so retrieve these items and process
+                # We have 50 Ids in our list, so retrieve these items and process
                 $fullItems = $script:service.BindToItems( $itemIds, $script:RequiredPropSet )
                 foreach ($fullItem in $fullItems)
                 {
@@ -2501,7 +2565,7 @@ function ProcessMailbox()
 {
     # Process the mailbox
 
-    Write-Host ([string]::Format("Processing mailbox {0}", $Mailbox)) -ForegroundColor Gray
+    Log "Processing mailbox $Mailbox" Gray
 	$script:service = CreateService($Mailbox)
 	if ($script:service -eq $Null)
 	{
