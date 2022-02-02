@@ -12,7 +12,7 @@
 # SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
-$version = "1.1.4"
+$version = "1.1.5"
 
 Function Log([string]$Details, [ConsoleColor]$Colour)
 {
@@ -424,6 +424,17 @@ Function Check-NamedProps
                                     }
                                 }
                             }
+                        }
+                        else
+                        {
+                            # EntryIds export file doesn't exist, so create one with the mailbox Id as the first line
+                            $mailboxSmtpAddress = $script:MailboxId
+                            if ( ![String]::IsNullOrEmpty($script:MailboxId.Local) )
+                            {
+                                # Our mailbox Id is not a string, so we'll piece together the SMTP address
+                                $mailboxSmtpAddress = "$($script:MailboxId.Local)@$($script:MailboxId.Domain)"
+                            }
+                            $mailboxSmtpAddress | out-file $entryIdsDumpFile
                         }
                     }
 
