@@ -126,6 +126,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this is set to any value higher than 0, then the script will go into -WhatIf mode once that many items have been processed.")]
     $MaximumNumberOfItemsToProcess = 0,
 
+    [Parameter(Mandatory=$False,HelpMessage="The number of items that will be requested in a single GetItem call.  Reduce this significantly (e.g. 10) if items are large and need to be retrieved.")]
+    $GetItemBatchSize = 500,
+    
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credentials")]
     [System.Management.Automation.PSCredential]$Credential,
@@ -178,10 +181,13 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
     [string]$TraceFile,
 
+    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
+    [switch]$FastFileLogging,
+
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.7"
+$script:ScriptVersion = "1.2.8"
 
 if ($ForceTLS12)
 {
@@ -203,13 +209,14 @@ Function LogToFile([string]$Details)
 
 Function UpdateDetailsWithCallingMethod([string]$Details)
 {
-    $stack = Get-PSCallStack
-    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 of on the stack
+    # Update the log message with details of the function that logged it
+    $timeInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())"
+    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 on the stack
     if (![String]::IsNullOrEmpty($callingFunction))
     {
-        $Details = "[$callingFunction] $Details"
+        return "$timeInfo [$callingFunction] $Details"
     }
-    return $Details
+    return "$timeInfo $Details"
 }
 
 Function Log([string]$Details, [ConsoleColor]$Colour)
@@ -220,6 +227,43 @@ Function Log([string]$Details, [ConsoleColor]$Colour)
     }
     $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Host $Details -ForegroundColor $Colour
+
+    if ($FastFileLogging)
+    {
+        # Writing the log file using a FileStream (that we keep open) is significantly faster than using out-file (which opens, writes, then closes the file each time it is called)
+        $fastFileLogError = $Error[0]
+        if (!$script:logFileStream)
+        {
+            # Open a filestream to write to our log
+            Write-Verbose "Opening/creating log file: $LogFile"
+            $script:logFileStream = New-Object IO.FileStream($LogFile, ([System.IO.FileMode]::Append), ([IO.FileAccess]::Write), ([IO.FileShare]::Read) )
+            if ( $Error[0] -ne $fastFileLogError )
+            {
+                $FastFileLogging = $false
+                Write-Host "Fast file logging disabled due to error: $Error[0]" -ForegroundColor Red
+                $script:logFileStream = $null
+            }
+        }
+        if ($script:logFileStream)
+        {
+            if (!$script:logFileStreamWriter)
+            {
+                $script:logFileStreamWriter = New-Object System.IO.StreamWriter($script:logFileStream)
+            }
+            $script:logFileStreamWriter.WriteLine($logInfo)
+            $script:logFileStreamWriter.Flush()
+            if ( $Error[0] -ne $fastFileLogError )
+            {
+                $FastFileLogging = $false
+                Write-Host "Fast file logging disabled due to error: $Error[0]" -ForegroundColor Red
+            }
+            else
+            {
+                return
+            }
+        }
+    }
+
     LogToFile $Details
 }
 Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" Green
@@ -257,7 +301,7 @@ Function ErrorReported($Context)
     }
     else
     {        
-        Log "ERROR: $($Error[0])" Red
+        Log UpdateDetailsWithCallingMethod("ERROR: $($Error[0])") Red
     }
     return $true
 }
@@ -337,10 +381,10 @@ function GetTokenWithCertificate
         }
     }   
 
-    $cca1 = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
-    $cca2 = $cca1.WithCertificate($OAuthCertificate)
-    $cca3 = $cca2.WithTenantId($OAuthTenantId)
-    $cca = $cca3.Build()
+    $cca = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca = $cca.WithCertificate($OAuthCertificate)
+    $cca = $cca.WithTenantId($OAuthTenantId)
+    $cca = $cca.Build()
 
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
@@ -348,31 +392,40 @@ function GetTokenWithCertificate
     $authResult = $acquire.ExecuteAsync().Result
     $script:oauthToken = $authResult
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    $Impersonate = $true
+    $script:Impersonate = $true
 }
 
 function GetTokenViaCode
 {
-    # Acquire auth code (needed to request token)
-    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
-    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
-    Start-Process $authUrl
-
-    $authcode = Read-Host "Auth code"
-    $codeStart = $authcode.IndexOf("?code=")
-    if ($codeStart -gt 0)
+    if ($script:oAuthToken -eq $null)
     {
-        $authcode = $authcode.Substring($codeStart+6)
-    }
-    $codeEnd = $authcode.IndexOf("&session_state=")
-    if ($codeEnd -gt 0)
-    {
-        $authcode = $authcode.Substring(0, $codeEnd)
-    }
-    Write-Verbose "Using auth code: $authcode"
+        # We don't yet have a token, so need to acquire auth code
+        $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+        Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+        Start-Process $authUrl
 
-    # Acquire token (using the auth code)
-    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+        $authcode = Read-Host "Auth code"
+        $codeStart = $authcode.IndexOf("?code=")
+        if ($codeStart -gt 0)
+        {
+            $authcode = $authcode.Substring($codeStart+6)
+        }
+        $codeEnd = $authcode.IndexOf("&session_state=")
+        if ($codeEnd -gt 0)
+        {
+            $authcode = $authcode.Substring(0, $codeEnd)
+        }
+        Write-Verbose "Using auth code: $authcode"
+        # Use the auth code to obtain our access and refresh token
+        $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+    }
+    else
+    {
+        # This is a renewal, so we use the refresh token previously acquired (no need for auth code)
+        $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oAuthToken.refresh_token}
+    }
+
+    # Acquire token
     try
     {
         $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
@@ -381,7 +434,7 @@ function GetTokenViaCode
     }
     catch
     {
-        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        Log "Failed to obtain OAuth token" Red
         exit # Failed to obtain a token
     }
 }
@@ -391,8 +444,22 @@ function GetTokenWithKey
     $Body = @{
       "grant_type"    = "client_credentials";
       "client_id"     = "$OAuthClientId";
-      "client_secret" = "$OAuthSecretKey";
       "scope"         = "https://outlook.office365.com/.default"
+    }
+
+    if ($script:oAuthToken -ne $null)
+    {
+        # If we have a refresh token, add that to our request body and change grant type
+        if (![String]::IsNullOrEmpty($script:oAuthToken.refresh_token))
+        {
+            $Body.Add("refresh_token", $script:oAuthToken.refresh_token)
+            $Body["grant_type"] = "refresh_token"
+        }
+    }
+    if ($Body["grant_type"] -eq "client_credentials")
+    {
+        # To obtain our first access token we need to use the secret key
+        $Body.Add("client_secret", $OAuthSecretKey)
     }
 
     try
@@ -403,7 +470,7 @@ function GetTokenWithKey
     }
     catch
     {
-        Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
+        Log "Failed to obtain OAuth token: $Error" Red
         exit # Failed to obtain a token
     }
     $script:Impersonate = $true
@@ -462,7 +529,7 @@ function ApplyEWSOAuthCredentials
     if ($exchangeCredentials -eq $null) { return }
     if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
     { 
-        Log "OAuth Token renewal failed"
+        Log "OAuth Token renewal failed" Red
         exit # We no longer have access to the mailbox, so we stop here
     }
 
@@ -487,6 +554,7 @@ Function LoadEWSManagedAPI
     if (!$ewsApiLoaded)
     {
         # Failed to load the EWS API, so try to install it from Nuget
+        Write-Host "EWS Managed API not found.  Checking available packages." -ForegroundColor Yellow
         $ewsapi = Find-Package "Exchange.WebServices.Managed.Api"
         if ($ewsapi.Entities.Name.Equals("Microsoft"))
         {
@@ -2222,6 +2290,7 @@ Function ThrottledBatchDelete()
     $totalItems = $ItemsToDelete.Count
     Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
 
+    LogVerbose "Deleting $totalItems item(s)"
     if ( $totalItems -gt 10000 )
     {
         if ( $script:throttlingDelay -lt 1000 )
@@ -2253,11 +2322,11 @@ Function ThrottledBatchDelete()
         }
 
         $results = $null
+        ApplyEWSOAuthCredentials
         try
         {
             LogVerbose "Sending batch request to delete $($deleteIds.Count) items ($($ItemsToDelete.Count) remaining)"
 			$results = $script:service.DeleteItems( $deleteIds, $deleteMode, [Microsoft.Exchange.WebServices.Data.SendCancellationsMode]::SendToNone, $null )
-            Start-Sleep -Milliseconds $script:throttlingDelay
             $consecutiveErrors = 0 # Reset the consecutive error count, as if we reach this point then this request succeeded with no error
         }
         catch
@@ -2293,7 +2362,9 @@ Function ThrottledBatchDelete()
             }
         }
 
+        $script:itemsDeleted += $ItemsToDelete.Count
         RemoveProcessedItemsFromList $deleteIds $results $ItemsToDelete
+        $script:itemsDeleted -= $ItemsToDelete.Count
 
         $percentComplete = ( ($totalItems - $ItemsToDelete.Count) / $totalItems ) * 100
         Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
@@ -2467,7 +2538,6 @@ Function ProcessFolder()
                 # No search filter, we want everything
 		        $FindResults=$Folder.FindItems($View)
             }
-            Start-Sleep -Milliseconds $script:throttlingDelay
         }
         catch
         {
@@ -2485,10 +2555,7 @@ Function ProcessFolder()
 		
         if ($FindResults)
         {
-		    ForEach ($item in $FindResults.Items)
-		    {
-                $itemsToProcess += $item
-		    }
+            $itemsToProcess += $FindResults.Items
 		    $MoreItems=$FindResults.MoreAvailable
             if ($MoreItems)
             {
@@ -2519,16 +2586,17 @@ Function ProcessFolder()
     }
     else
     {
-        # We send GetItem request for 50 items at a time
+        # We send GetItem request for multiple items at a time
 
         $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
         ForEach ($item in $itemsToProcess)
         {
             $itemIds.Add($item.Id)
             $i++
-            if ($itemIds.Count -ge 50)
+            if ($itemIds.Count -ge $GetItemBatchSize)
             {
-                # We have 50 Ids in our list, so retrieve these items and process
+                # We have a full batch, so retrieve these items and process
+                ApplyEWSOAuthCredentials
                 $fullItems = $script:service.BindToItems( $itemIds, $script:RequiredPropSet )
                 foreach ($fullItem in $fullItems)
                 {
@@ -2554,6 +2622,7 @@ Function ProcessFolder()
     }
 
     Write-Progress -Activity "$progressActivity processing items" -Status "Complete" -Completed
+    Log "Completed processing folder $($Folder.DisplayName)" Gray
 
     if ($script:itemsToDelete.Count -gt 0)
     {
@@ -2745,4 +2814,10 @@ Else
 if ($script:Tracer -ne $null)
 {
     $script:Tracer.Close()
+}
+
+if ($script:logFileStreamWriter)
+{
+    $script:logFileStreamWriter.Close()
+    $script:logFileStreamWriter.Dispose()
 }
