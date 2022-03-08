@@ -12,7 +12,7 @@
 # SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
-$version = "1.1.5"
+$version = "1.1.6"
 
 Function Log([string]$Details, [ConsoleColor]$Colour)
 {
@@ -484,7 +484,7 @@ Function Check-NamedProps
 
                         if ( ($namedPropCount -gt 0) -and ($DumpPropsIfTotalExceeds -ge 0) )
                         {
-                            if ( ($DumpPropsIfTotalExceeds -le $namedPropCount) -and ($SearchNamedProp -or $SearchGuid) )
+                            if ( ($DumpPropsIfTotalExceeds -le $namedPropCount) -or $SearchNamedProp -or $SearchGuid )
                             {
                                 # This mailbox exceeds our property limit (or contains the specific named property we are looking for), so we dump all the properties to a file for further investigation
                                 $dumpPropsFileName = "$DumpPropsPath$($mbx.MailboxGuid).namedprops.xml"
