@@ -187,7 +187,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.8"
+$script:ScriptVersion = "1.2.9"
 
 if ($ForceTLS12)
 {
@@ -300,8 +300,9 @@ Function ErrorReported($Context)
         Log "ERROR ($Context): $($Error[0])" Red
     }
     else
-    {        
-        Log UpdateDetailsWithCallingMethod("ERROR: $($Error[0])") Red
+    {
+        $log = UpdateDetailsWithCallingMethod("ERROR: $($Error[0])")
+        Log $log Red
     }
     return $true
 }
@@ -2485,34 +2486,56 @@ Function ProcessFolder()
     $i = 0
 
     LogVerbose "Building list of items"
+    $filters = @()
     if ($MatchContactAddresses)
     {
-        $filters = @()
+        # Add filter for contact address matching (a contact address can be in one of three properties)
+        $contactFilters = @()
         foreach ($contactAddress in $MatchContactAddresses)
         {
             LogVerbose "Adding SMTP address search: $smtpAddress"
-            $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress1, $contactAddress, 
+            $contactFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress1, $contactAddress, 
                 [Microsoft.Exchange.WebServices.Data.ContainmentMode]::FullString, [Microsoft.Exchange.WebServices.Data.ComparisonMode]::IgnoreCase)
-            $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress2, $contactAddress, 
+            $contactFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress2, $contactAddress, 
                 [Microsoft.Exchange.WebServices.Data.ContainmentMode]::FullString, [Microsoft.Exchange.WebServices.Data.ComparisonMode]::IgnoreCase)
-            $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress3, $contactAddress, 
+            $contactFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ContactSchema]::EmailAddress3, $contactAddress, 
                 [Microsoft.Exchange.WebServices.Data.ContainmentMode]::FullString, [Microsoft.Exchange.WebServices.Data.ComparisonMode]::IgnoreCase)
 
         }
-        $SearchFilter = $Null
-        if ( $filters.Count -gt 0 )
+        if ( $contactFilters.Count -gt 0 )
         {
-            $SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::Or)
-            foreach ($filter in $filters)
+            $contactFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::Or)
+            foreach ($filter in $contactFilters)
             {
-                $SearchFilter.Add($filter)
+                $contactFilter.Add($filter)
             }
-        }        
+            $filters += $contactFilter
+        }
     }
-    elseif (![String]::IsNullOrEmpty($SearchFilter))
+
+    # Add filter(s) for creation time
+    if ( $CreatedAfter )
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan($script:PR_CREATION_TIME, $CreatedAfter)
+    }
+    if ( $CreatedBefore )
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan($script:PR_CREATION_TIME, $CreatedBefore)
+    }
+
+    if (![String]::IsNullOrEmpty($SearchFilter))
     {
         LogVerbose "Search query being applied: $SearchFilter"
     }
+    elseif ( $filters.Count -gt 0 )
+    {
+        # Create the search filter
+        $SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::And)
+        foreach ($filter in $filters)
+        {
+            $SearchFilter.Add($filter)
+        }
+    }    
 
     Write-Progress -Activity "$progressActivity reading items" -Status "0 items found" -PercentComplete -1
 	while ($MoreItems)
