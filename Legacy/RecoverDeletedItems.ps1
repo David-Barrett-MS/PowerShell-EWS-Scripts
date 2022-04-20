@@ -13,97 +13,189 @@
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
 param (
-	[Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
-	[ValidateNotNullOrEmpty()]
-	[string]$Mailbox,
+    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed.")]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mailbox,
 
-	[Parameter(Position=1,Mandatory=$False,HelpMessage="Start date (if items are older than this, they will be ignored)")]
-	[ValidateNotNullOrEmpty()]
-	[datetime]$RestoreStart,
+    [Parameter(Position=1,Mandatory=$False,HelpMessage="Start date (if items are older than this, they will be ignored).")]
+    [ValidateNotNullOrEmpty()]
+    [datetime]$RestoreStart,
 	
-	[Parameter(Position=2,Mandatory=$False,HelpMessage="End date (if items are newer than this, they will be ignored)")]
-	[ValidateNotNullOrEmpty()]
-	[datetime]$RestoreEnd,
+    [Parameter(Position=2,Mandatory=$False,HelpMessage="End date (if items are newer than this, they will be ignored).")]
+    [ValidateNotNullOrEmpty()]
+    [datetime]$RestoreEnd,
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to restore from (if not specified, items are recovered from retention)")]	
-	[string]$RestoreFromFolder,
+    [Parameter(Mandatory=$False,HelpMessage="Folder to restore from (if not specified, items are recovered from retention).  Use WellKnownFolderNames.DeletedItems to restore from Deleted Items folder.")]	
+    [string]$RestoreFromFolder,
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to restore to (if not specified, items are recovered based on where they were deleted from, or their item type)")]	
-	[string]$RestoreToFolder,
+    [Parameter(Mandatory=$False,HelpMessage="Folder to restore to (if not specified, items are recovered based on where they were deleted from, or their item type).")]	
+    [string]$RestoreToFolder,
 
-	[Parameter(Mandatory=$False,HelpMessage="If this is specified and the restore folder needs to be created, the default item type for the created folder will be as defined here.  If missing, the default will be IPF.Note.")]	
-	[string]$RestoreToFolderDefaultItemType = "IPF.Note",
+    [Parameter(Mandatory=$False,HelpMessage="If this is specified and the restore folder needs to be created, the default item type for the created folder will be as defined here.  If missing, the default will be IPF.Note.")]	
+    [string]$RestoreToFolderDefaultItemType = "IPF.Note",
 
-	[Parameter(Mandatory=$False,HelpMessage="If this is specified then the item is copied back to the mailbox instead of being moved.")]
-	[switch]$RestoreAsCopy,
+    [Parameter(Mandatory=$False,HelpMessage="If this is specified then the item is copied back to the restore folder instead of being moved.")]
+    [switch]$RestoreAsCopy,
 
-    [Parameter(Mandatory=$False,HelpMessage="A list of message classes that will be recovered (any not listed will be ignored, unless the parameter is missing in which case all classes are restored)")]
+    [Parameter(Mandatory=$False,HelpMessage="A list of message classes that will be recovered (any not listed will be ignored, unless the parameter is missing in which case all classes are restored).")]
     $RestoreMessageClasses,
     
-	[Parameter(Mandatory=$False,HelpMessage="If you specify this, any emails sent from this address will be considered as sent from the mailbox owner (can help with Sent Item matching)")]
-	[ValidateNotNullOrEmpty()]
-	[string]$MyEmailAddress,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, any emails sent from this address will be considered as sent from the mailbox owner (can help with Sent Item matching).")]
+    [ValidateNotNullOrEmpty()]
+    [string]$MyEmailAddress,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox is accessed (instead of the main mailbox)")]
-	[switch]$Archive,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox is accessed (instead of the main mailbox).")]
+    [switch]$Archive,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox is accessed (instead of the main mailbox), and paths are from root (i.e. above Top of Information store)")]
-	[switch]$ArchiveRoot,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox is accessed (instead of the main mailbox), and paths are from root (i.e. above Top of Information store).")]
+    [switch]$ArchiveRoot,
 
-	[Parameter(Mandatory=$False,HelpMessage="If we're accessing Exchange 2007, we need different logic")]
-	[switch]$Exchange2007,
+    [Parameter(Mandatory=$False,HelpMessage="If accessing Exchange 2007, different logic is needed to restore, so this switch must be specified.")]
+    [switch]$Exchange2007,
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, and the PidLidSpamOriginalFolder property is set on the message, the script will attempt to restore to that folder.")]
+    [switch]$UseJunkRestoreFolder,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, and the PidLidSpamOriginalFolder property is set on the message, the script will attempt to restore to that folder")]
-	[switch]$UseJunkRestoreFolder,
-
-	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
 	
-	[Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
-	[switch]$OAuth,
-	
-	[Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-	[string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
-	
-	[Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-	[string]$OAuthRedirectUri = "http://localhost/code",
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available.")]
+    [switch]$OAuth,
 
-	[Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
-	[switch]$Impersonate,
-	
-	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
-	[string]$EwsUrl,
-	
-	[Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
-	[switch]$Office365,
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 
-	[Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
-	[string]$EWSManagedApiPath = "",
-	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
-	[switch]$IgnoreSSLCertificate,
-	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
-	[switch]$AllowInsecureRedirection,
-	
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id of the tenant being accessed.")]
+    [string]$OAuthTenantId = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
-	[switch]$FastFileLogging,
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
+    [string]$OAuthRedirectUri = "http://localhost/code",
 
-	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
-	[string]$TraceFile,
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    [string]$OAuthSecretKey = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
+    [switch]$OAuthDebug,
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    $OAuthCertificate = $null,
+
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
+    [switch]$Impersonate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, actions that would be taken will be logged, but nothing will be changed")]
-	[switch]$WhatIf
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used).")]
+    [string]$EwsUrl,
+	
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl).")]
+    [switch]$Office365,
+
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed).")]
+    [string]$EWSManagedApiPath = "",
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate).")]	
+    [switch]$IgnoreSSLCertificate,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover.")]	
+    [switch]$AllowInsecureRedirection,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified.")]	
+    [string]$LogFile = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled).")]
+    [switch]$FastFileLogging,
+
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file.")]	
+    [string]$TraceFile,
+	
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, actions that would be taken will be logged, but nothing will be changed.")]
+    [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.1.7"
+$script:ScriptVersion = "1.1.8"
 
 # Define our functions
+
+Function LogToFile([string]$Details)
+{
+	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
+	"$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())   $Details" | Out-File $LogFile -Append
+}
+
+Function UpdateDetailsWithCallingMethod([string]$Details)
+{
+    # Update the log message with details of the function that logged it
+    $timeInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())"
+    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 on the stack
+    if (![String]::IsNullOrEmpty($callingFunction))
+    {
+        return "$timeInfo [$callingFunction] $Details"
+    }
+    return "$timeInfo $Details"
+}
+
+Function Log([string]$Details, [ConsoleColor]$Colour)
+{
+    if ($Colour -eq $null)
+    {
+        $Colour = [ConsoleColor]::White
+    }
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Host $Details -ForegroundColor $Colour
+
+    if ($FastFileLogging)
+    {
+        # Writing the log file using a FileStream (that we keep open) is significantly faster than using out-file (which opens, writes, then closes the file each time it is called)
+        $fastFileLogError = $Error[0]
+        if (!$script:logFileStream)
+        {
+            # Open a filestream to write to our log
+            Write-Verbose "Opening/creating log file: $LogFile"
+            $script:logFileStream = New-Object IO.FileStream($LogFile, ([System.IO.FileMode]::Append), ([IO.FileAccess]::Write), ([IO.FileShare]::Read) )
+            if ( $Error[0] -ne $fastFileLogError )
+            {
+                $FastFileLogging = $false
+                Write-Host "Fast file logging disabled due to error: $Error[0]" -ForegroundColor Red
+                $script:logFileStream = $null
+            }
+        }
+        if ($script:logFileStream)
+        {
+            if (!$script:logFileStreamWriter)
+            {
+                $script:logFileStreamWriter = New-Object System.IO.StreamWriter($script:logFileStream)
+            }
+            $script:logFileStreamWriter.WriteLine($logInfo)
+            $script:logFileStreamWriter.Flush()
+            if ( $Error[0] -ne $fastFileLogError )
+            {
+                $FastFileLogging = $false
+                Write-Host "Fast file logging disabled due to error: $Error[0]" -ForegroundColor Red
+            }
+            else
+            {
+                return
+            }
+        }
+    }
+
+    LogToFile $Details
+}
+Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" Green
+
+Function LogVerbose([string]$Details)
+{
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Verbose $Details
+    LogToFile $Details
+}
+
+Function LogDebug([string]$Details)
+{
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Debug $Details
+    LogToFile $Details
+}
 
 $script:LastError = $Error[0]
 Function ErrorReported($Context)
@@ -120,11 +212,12 @@ Function ErrorReported($Context)
     $script:LastError = $Error[0]
     if ($Context)
     {
-        Log "Error ($Context): $($Error[0])" Red
+        Log "ERROR ($Context): $($Error[0])" Red
     }
     else
     {
-        Log "Error: $($Error[0])" Red
+        $log = UpdateDetailsWithCallingMethod("ERROR: $($Error[0])")
+        Log $log Red
     }
     return $true
 }
@@ -134,84 +227,6 @@ Function ReportError($Context)
     # Reports error without returning the result
     ErrorReported $Context | Out-Null
 }
-
-$script:fastLogWrite = $FastFileLogging
-Function LogToFile([string]$Details)
-{
-	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
-    $logInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())   $Details"
-    if ($script:fastLogWrite)
-    {
-        Write-Host "Fast log write: $($script:fastLogWrite)" -ForegroundColor Yellow
-        if (!$script:logFileStream)
-        {
-            # Open a filestream to write to our log
-            try
-            {
-                $script:logFileStream = New-Object IO.FileStream($LogFile, @([System.IO.FileMode]::Append), ([IO.FileAccess]::Write), ([IO.FileShare]::Read) )
-            } catch {}
-            if ( $(ErrorReported "Opening log file") )
-            {
-                $script:fastLogWrite = $false
-                Write-Host "Disabled fast log write: $($script:fastLogWrite)" -ForegroundColor Yellow
-            }
-        }
-        if ($script:logFileStream)
-        {
-            Write-Host "Hello1" -ForegroundColor Cyan
-            try
-            {
-                $streamWriter = New-Object System.IO.StreamWriter($script:logFileStream)
-            } catch {}
-            Write-Host "Hello5" -ForegroundColor Cyan
-            if ( !$(ErrorReported "Opening log stream writer") )
-            {
-                Write-Host "Hello2" -ForegroundColor Cyan
-                try
-                {
-                    $streamWriter.WriteLine($logInfo)
-                    $streamWriter.Dispose()
-                }
-                catch {}
-                if ( !$(ErrorReported "Writing log file") )
-                {
-                    return
-                }
-            }
-            Write-Host "Hello3" -ForegroundColor Cyan
-            $script:fastLogWrite = $false
-            Write-Host "Disabled fast log write: $($script:fastLogWrite)" -ForegroundColor Yellow
-        }
-        Write-Host "Hello4" -ForegroundColor Cyan
-    }
-	$logInfo | Out-File $LogFile -Append
-}
-
-Function Log([string]$Details, [ConsoleColor]$Colour)
-{
-    if ($Colour -eq $null)
-    {
-        $Colour = [ConsoleColor]::White
-    }
-    Write-Host $Details -ForegroundColor $Colour
-    LogToFile $Details
-}
-Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" Green
-
-Function LogVerbose([string]$Details)
-{
-    Write-Verbose $Details
-    if ($VerbosePreference -eq "SilentlyContinue") { return }
-    LogToFile $Details
-}
-
-Function LogDebug([string]$Details)
-{
-    Write-Debug $Details
-    if ($DebugPreference -eq "SilentlyContinue") { return }
-    LogToFile $Details
-}
-
 
 function LoadLibraries()
 {
@@ -227,11 +242,7 @@ function LoadLibraries()
         # First check if the dll is in current directory
         LogDebug "Searching for DLL: $dllName"
         $dll = $null
-        try
-        {
-            $dll = Get-ChildItem $dllName -ErrorAction SilentlyContinue
-        }
-        catch {}
+        $dll = Get-ChildItem $dllName -ErrorAction Ignore
 
         if ($searchProgramFiles)
         {
@@ -244,7 +255,6 @@ function LoadLibraries()
 	            }
             }
         }
-        $script:LastError = $Error[0] # We do this to suppress any errors encountered during the search above
 
         if ($dll -eq $null)
         {
@@ -255,7 +265,7 @@ function LoadLibraries()
         {
             try
             {
-		        LogVerbose "Loading $dllName v$($dll.VersionInfo.FileVersion) found at: $($dll.VersionInfo.FileName)"
+		        LogVerbose ([string]::Format("Loading {2} v{0} found at: {1}", $dll.VersionInfo.FileVersion, $dll.VersionInfo.FileName, $dllName))
 		        Add-Type -Path $dll.VersionInfo.FileName
                 if ($dllLocations)
                 {
@@ -273,26 +283,113 @@ function LoadLibraries()
     return $true
 }
 
-function LoadADAL
+function GetTokenWithCertificate
 {
-    # First of all, we check if ADAL is already available
-    # To do this, we simply try to instantiate an authentication context to the common log-on Url.  If we get an object back, we have ADAL
+    # We use MSAL with certificate auth
+    if (!script:msalApiLoaded)
+    {
+        $msalLocation = @()
+        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
+        if (!$script:msalApiLoaded)
+        {
+            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
+            exit
+        }
+    }   
 
-    LogDebug "Checking for ADAL"
-    $authenticationContextCommon = $null
-    try
+    $cca = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca = $cca.WithCertificate($OAuthCertificate)
+    $cca = $cca.WithTenantId($OAuthTenantId)
+    $cca = $cca.Build()
+
+    $scopes = New-Object System.Collections.Generic.List[string]
+    $scopes.Add("https://outlook.office365.com/.default")
+    $acquire = $cca.AcquireTokenForClient($scopes)
+    $authResult = $acquire.ExecuteAsync().Result
+    $script:oauthToken = $authResult
+    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $script:Impersonate = $true
+}
+
+function GetTokenViaCode
+{
+    if ($script:oAuthToken -eq $null)
     {
-        $authenticationContextCommon = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    } catch {}
-    if ($authenticationContextCommon -ne $null)
+        # We don't yet have a token, so need to acquire auth code
+        $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+        Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+        Start-Process $authUrl
+
+        $authcode = Read-Host "Auth code"
+        $codeStart = $authcode.IndexOf("?code=")
+        if ($codeStart -gt 0)
+        {
+            $authcode = $authcode.Substring($codeStart+6)
+        }
+        $codeEnd = $authcode.IndexOf("&session_state=")
+        if ($codeEnd -gt 0)
+        {
+            $authcode = $authcode.Substring(0, $codeEnd)
+        }
+        Write-Verbose "Using auth code: $authcode"
+        # Use the auth code to obtain our access and refresh token
+        $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+    }
+    else
     {
-        LogVerbose "ADAL already available, no need to load dlls."
-        return $true
+        # This is a renewal, so we use the refresh token previously acquired (no need for auth code)
+        $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oAuthToken.refresh_token}
     }
 
-    # Load the ADAL libraries
-    $adalDllsLocation = @()
-    return $(LoadLibraries $false @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll") ([ref]$adalDllsLocation) )
+    # Acquire token
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Log "Failed to obtain OAuth token" Red
+        exit # Failed to obtain a token
+    }
+}
+
+function GetTokenWithKey
+{
+    $Body = @{
+      "grant_type"    = "client_credentials";
+      "client_id"     = "$OAuthClientId";
+      "scope"         = "https://outlook.office365.com/.default"
+    }
+
+    if ($script:oAuthToken -ne $null)
+    {
+        # If we have a refresh token, add that to our request body and change grant type
+        if (![String]::IsNullOrEmpty($script:oAuthToken.refresh_token))
+        {
+            $Body.Add("refresh_token", $script:oAuthToken.refresh_token)
+            $Body["grant_type"] = "refresh_token"
+        }
+    }
+    if ($Body["grant_type"] -eq "client_credentials")
+    {
+        # To obtain our first access token we need to use the secret key
+        $Body.Add("client_secret", $OAuthSecretKey)
+    }
+
+    try
+    {
+        $script:oAuthToken = Invoke-RestMethod -Method POST -uri "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token" -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Log "Failed to obtain OAuth token: $Error" Red
+        exit # Failed to obtain a token
+    }
+    $script:Impersonate = $true
 }
 
 function GetOAuthCredentials
@@ -303,45 +400,33 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ( $(LoadADAL) -eq $false )
+    if ($script:oauthToken -ne $null -and -not $RenewToken)
     {
-        Log "Failed to load ADAL, which is required for OAuth" Red
-        Exit
+        # We already have a token
+        if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
+        {
+            # Token still valid, so return that
+            $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
+            return $exchangeCredentials
+        }
     }
+    # Token needs renewing
 
-    $script:authenticationResult = $null
-    if ([String]::IsNullOrEmpty($OAuthTenantId))
+    if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
+        GetTokenWithKey
+    }
+    elseif ($OAuthCertificate -ne $null)
+    {
+        GetTokenWithCertificate
     }
     else
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.microsoftonline.com/$OAuthTenantId", $False)
-    }
-    if ($RenewToken)
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Auto)
-    }
-    else
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::SelectAccount)
+        GetTokenViaCode
     }
 
-    $redirectUri = New-Object Uri($OAuthRedirectUri)
-    $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
-
-    if ( !$script:authenticationResult.IsFaulted )
-    {
-        $script:oAuthToken = $authenticationResult.Result
-        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthToken.AccessToken)
-        $Mailbox = $authenticationResult.Result.UserInfo.UniqueId
-        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId), access token expires $($script:oAuthToken.ExpiresOn)"
-    }
-    else
-    {
-        ReportError "GetOAuthCredentials"
-    }
-
+    # If we get here we have a valid token
+    $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
     return $exchangeCredentials
 }
 
@@ -349,27 +434,30 @@ function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
-    if ( $script:authenticationResult -eq $null ) { return }
+    if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
     if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
     LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
     { 
-        Log "OAuth Token renewal failed"
+        Log "OAuth Token renewal failed" Red
         exit # We no longer have access to the mailbox, so we stop here
     }
 
-    Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
-    foreach ($service in $script:services.Values)
+    Log "OAuth token successfully renewed; new expiry: $($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in))"
+    if ($script:services.Count -gt 0)
     {
-        $service.Credentials = $exchangeCredentials
+        foreach ($service in $script:services.Values)
+        {
+            $service.Credentials = $exchangeCredentials
+        }
+        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
-    LogVerbose "Updated OAuth token for $($script:services.Count) ExchangeService objects"
 }
 
 Function LoadEWSManagedAPI()
@@ -1162,7 +1250,7 @@ Function RecoverFromFolder()
 				
 				        default
 				        {
-					        Log "Item was not a class enabled for recovery: $($Item.ItemClass)" Red
+					        Log "Item was not a class supported for recovery: $($Item.ItemClass)" Red
                             if (!$WhatIf) { $skipped++ }
 				        }
 			        }
