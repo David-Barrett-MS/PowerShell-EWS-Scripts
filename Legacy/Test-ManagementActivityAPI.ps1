@@ -92,6 +92,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this is specified, content will be saved to this path (each content blob will be a separate text file)")]
     [string]$SaveContentPath,
 
+    [Parameter(Mandatory=$False,HelpMessage="Maximum number of jobs that can run at one time (in parallel) to download content.")]
+    [int]$MaxRetrieveContentJobs = 5,
+
     [Parameter(Mandatory=$False,HelpMessage="Date for which to retrieve content")]
     $ListContentDate,
 
@@ -112,7 +115,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.0.8"
+$script:ScriptVersion = "1.0.9"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -237,25 +240,56 @@ function LoadLibraries
     return $true
 }
 
-# Check we have ADAL libraries available
-function LoadADAL
+function GetTokenWithCertificate
 {
-    # First of all, we check if ADAL is already available
-    # To do this, we simply try to instantiate an authentication context to the common log-on Url.  If we get an object back, we have ADAL
-    $authenticationContextCommon = $null
-    try
+    # We use MSAL with certificate auth
+    if (!script:msalApiLoaded)
     {
-        $authenticationContextCommon = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    } catch {}
-    if ($authenticationContextCommon -ne $null)
-    {
-        LogVerbose "ADAL already available, no need to load dlls."
-        return $true
+        $msalLocation = @()
+        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
+        if (!$script:msalApiLoaded)
+        {
+            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
+            exit
+        }
+    }   
+
+    $cca1 = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca2 = $cca1.WithCertificate($OAuthCertificate)
+    $cca3 = $cca2.WithTenantId($OAuthTenantId)
+    $cca = $cca3.Build()
+
+    $scopes = New-Object System.Collections.Generic.List[string]
+    $scopes.Add("https://manage.office.com/.default")
+    $acquire = $cca.AcquireTokenForClient($scopes)
+    $authResult = $acquire.ExecuteAsync().Result
+    $script:oauthToken = $authResult
+    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+}
+
+function GetTokenWithKey
+{
+    # We have secret key, so use that to request access token
+
+    $Body = @{
+      "grant_type"    = "client_credentials";
+      "client_id"     = "$AppId";
+      "client_secret" = "$AppSecretKey";
+      "scope"         = "https://manage.office.com/.default"
     }
 
-    # Load the ADAL libraries
-    $requiredLibraries = @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll")
-    return $(LoadLibraries $false $requiredLibraries)
+    try
+    {
+        $script:oAuthToken = Invoke-RestMethod -Method POST -uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
 }
 
 # Get our OAuth token
@@ -263,91 +297,55 @@ function GetAccessToken
 {
     # Obtain OAuth token for accessing mailbox
 
-    if ( $(LoadADAL) -eq $false )
+    $script:LastError = $Error[0]
+    if (![String]::IsNullOrEmpty($AppSecretKey))
     {
-        Log "Failed to load ADAL, which is required for OAuth" Red
+        # We are authenticating using secret key
+        GetTokenWithKey
+        LogVerbose "OAuth call (secret key) complete"
+        return $script:oAuthAccessToken
+    }
+
+    if ([String]::IsNullOrEmpty($AppAuthCertificate))
+    {
+        Log "Either certificate or secret key must be supplied" Red
         Exit
     }
 
-    $authUrl = "https://login.microsoftonline.com/$TenantId" # Common log-on URL is https://login.windows.net/common, but that can't be used for Management API
-    LogVerbose "Auth Url: $authUrl"
-    $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext($authUrl, $False)
-
-    $script:LastError = $Error[0]
-    if (![String]::IsNullOrEmpty($AppAuthCertificate))
-    {
-        # We are using certificate authentication
-        LogVerbose "Attempting to load certificate: $AppAuthCertificate"
-        $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromCertFile($AppAuthCertificate)
-        $clientAssertionCertificate = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.ClientAssertionCertificate($AppId, $certificate)
-        LogVerbose "Requesting access token using certificate"
-        $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://manage.office.com", $clientAssertionCertificate)
-    }
-    else
-    {
-        # No certificate, so we are authenticating using secret key
-        if ([String]::IsNullOrEmpty($AppSecretKey))
-        {
-            Log "Neither secret key nor authentication certificate was supplied.  Cannot authenticate." Red
-            Exit
-        }
-        $clientCredential = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.ClientCredential($AppId, $AppSecretKey)
-        LogVerbose "Requesting access token using secret key"
-        $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://manage.office.com", $clientCredential)
-
-    }
-        
-    if (!$script:authenticationResult.IsCompleted)
-    {
-        if (!$script:authenticationResult.Wait(30000))
-        {
-            Log "Timed out waiting for authentication response" Red
-            Exit
-        }
-    }
+    # We are using certificate authentication - we currently need ADAL for this
+    GetTokenWithCertificate
 
     # Check we've got an access token
     LogVerbose "OAuth call complete"
-
-    if ( !$script:authenticationResult )
-    {
-        Log "Failed to authenticate - no result returned" Red
-        exit
-    }
-    
-    if ($script:authenticationResult.IsFaulted)
-    {
-        Log "Error occurred during ADAL authentication" Red
-        Log $script:authenticationResult.Exception
-        exit
-    }
-    if ([String]::IsNullOrEmpty($script:authenticationResult.Result))
-    {
-        Log "Empty authentication result" Red
-        Log $script:authenticationResult
-        exit
-    }
-    LogVerbose "OAuth log-on completed successfully"
-    LogVerbose "Access token acquired: $($script:authenticationResult.Result.AccessToken)"
-    Log "Access token expires at (UTC): $($script:authenticationResult.Result.ExpiresOn.DateTime)" Green
-    return $script:authenticationResult.Result.AccessToken
+    return $script:oAuthAccessToken
 }
 
 function GetValidAccessToken
 {
     # Check if access token needs renewing, and if so renew it.  We renew only if token has expired (before this, ADAL will simply return the same one)
-    if ( $script:authenticationResult.Result.ExpiresOn.DateTime -ge [DateTime]::UtcNow ) { return $script:accessToken }
-
-    # Access token has expired, so we need to renew it
-    Log("OAuth access token has expired, attempting to renew")
-    $script:accessToken = GetAccessToken
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::UtcNow )
+    if ($script:oauthToken -ne $null)
     {
-        Log "Failed to renew access token" Red
+        # We already have a token
+        if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
+        {
+            # Token still valid, so return that
+            return $script:oAuthAccessToken
+        }
+
+        # Token needs renewing
+    }
+
+
+    # We either don't have an access token, or it has expired
+    Log("Obtaining OAuth access token")
+    $script:accessToken = GetAccessToken
+    if ( $script:oauthTokenAcquireTime -and $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::UtcNow )
+    {
+        Log "Access token is expired" Red
         exit
     }
-    Log "OAuth token renewed, will expire at $($script:authenticationResult.Result.ExpiresOn)" Green
-    return $script:accessToken
+    Log "OAuth token renewed, will expire at $($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in))" Green
+    return $script:authenticationResult.Result.AccessToken
 }
 
 function RetriableInvoke-WebRequest
@@ -857,10 +855,72 @@ if ($ListContent -or $RetrieveContent)
 #
 ########################################################
 
-if ($RetrieveContent)
+# Define the download function in a script block, as it is run as a job (which also means that it can't access any variables from the main session)
+
+$downloadFunction = {
+function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePath)
 {
-    $contentRetrieved = 0
+    # Download the specified content blob and save to file
+    $auditData = ""
+    #$auditData = GetRest $contentUrl
+    $auditData = Invoke-WebRequest -Uri $contentUrl -Headers @{"Authorization" = $auth} -Method Get
+
+    if ($auditData.Length -gt 0)
+    {
+        Write-Host "Saving audit data"
+        if (![String]::IsNullOrEmpty($savePath))
+        {
+            # Save this data
+
+            # ContentUri will be of format https://manage.office.com/api/v1.0/fc69f6a8-90cd-4047-977d-0c768925b8ec/activity/feed/audit/20190205113446710142142$20190205134333251104202$audit_exchange$Audit_Exchange
+            # We use the last part as the filename
+            $outputFileName = $contentUrl.Substring($contentUrl.LastIndexOf("/")+1)
+            [string]$outputFile = $savePath
+            if (![String]::IsNullOrEmpty($outputFile) -and !$outputFile.EndsWith("\")) { $outputFile = "$outputFile\" }
+            $outputFile = "$outputFile$outputFileName"
+            
+            if ($(Test-Path "$outputFile.txt"))
+            {
+                # Output file already exists
+                Write-Verbose "Already retrieved data blob: $outputFile.txt"
+
+                # We perform a sanity check here to ensure that the blob we have already retrieved is the same data
+                $existingBlob = [IO.File]::ReadAllText("$outputFile.txt")
+                if (!$existingBlob.Equals($($auditData | out-string)))
+                {
+                    # This data is different - which is unexpected, so we'll save it as an additional file
+                    Write-Host "Content blob is different to the one already retrieved, but should be the same: $outputFile.txt" -ForegroundColor Red
+                    $i = 1
+                    while ($(Test-Path "$outputFile.$i.txt"))
+                        { $i++ }
+                    $outputFile = "$outputFile.$i.txt"
+                }
+                else
+                {
+                    $outputFile = ""
+                }
+            }
+            if (![String]::IsNullOrEmpty($outputFile))
+            {
+                Write-Host "Saving data blob to: $outputFile.txt"
+                $auditData | Out-File -Filepath "$outputFile.txt" -NoClobber
+            }
+        }
+    }
+    else
+    {
+        Write-Verbose "No data returned from $contentUrl"
+    }
+}
+}
+
+if ($RetrieveContent -and $contentUrls.Length -gt 0)
+{    
+    $script:contentRetrieved = 0
     $totalContentCount = $contentUrls.Length
+
+    $global:activeJobs = @()
+    $global:SaveContentPath = $SaveContentPath
 
     if ($ListContentDate)
     {
@@ -872,66 +932,44 @@ if ($RetrieveContent)
     }
 
     Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
+    $auth = "Bearer $(GetValidAccessToken)"
     foreach ($contentUrl in $contentUrls)
     {
-        $auditData = ""
-        $auditData = GetRest $contentUrl
-        if ($auditData.Length -gt 0)
+        $downloadJob = Start-Job -Scriptblock { param($url, $auth, $savePath) DownloadContentBlob $url $auth $savePath } -ArgumentList ($contentUrl, $auth, $SaveContentPath) -InitializationScript $downloadFunction
+        $activeJobs += $downloadJob
+        while ($activeJobs.Count -ge $MaxRetrieveContentJobs)
         {
-            $contentRetrieved++
-            if (![String]::IsNullOrEmpty($SaveContentPath))
+            # We have enough jobs running, so we need to wait until at least one has completed
+            # We go through all of them and remove any that have finished
+            for ($i=$activeJobs.Count-1; $i -ge 0; $i--)
             {
-                # Save this data
-
-                # ContentUri will be of format https://manage.office.com/api/v1.0/fc69f6a8-90cd-4047-977d-0c768925b8ec/activity/feed/audit/20190205113446710142142$20190205134333251104202$audit_exchange$Audit_Exchange
-                # We use the last part as the filename
-                $outputFileName = $contentUrl.Substring($contentUrl.LastIndexOf("/")+1)
-                [string]$outputFile = $SaveContentPath
-                if (!$outputFile.EndsWith("\")) { $outputFile = "$outputFile\" }
-                $outputFile = "$outputFile$outputFileName"
-            
-                if ($(Test-Path "$outputFile.txt"))
+                if ($activeJobs[$i].State -ne "Running")
                 {
-                    # Output file already exists
-                    LogVerbose "Already retrieved data blob: $outputFile.txt"
-
-                    # We perform a sanity check here to ensure that the blob we have already retrieved is the same data
-                    $existingBlob = [IO.File]::ReadAllText("$outputFile.txt")
-                    if (!$existingBlob.Equals($($auditData | out-string)))
-                    {
-                        # This data is different - which is unexpected, so we'll save it as an additional file
-                        Log "Content blob is different to the one already retrieved, but should be the same: $outputFile.txt" Red
-                        $i = 1
-                        while ($(Test-Path "$outputFile.$i.txt"))
-                            { $i++ }
-                        $outputFile = "$outputFile.$i.txt"
-                    }
-                    else
-                    {
-                        $outputFile = ""
-                    }
-                }
-                if (![String]::IsNullOrEmpty($outputFile))
-                {
-                    Log "Saving data blob to: $outputFile.txt"
-                    $auditData | Out-File -Filepath "$outputFile.txt" -NoClobber
+                    $activeJobs.RemoveAt($i)
+                    $script:contentRetrieved++
                 }
             }
-        }
-        else
-        {
-            LogVerbose "No data returned from $contentUrl"
+            if ($activeJobs.Count -ge $MaxRetrieveContentJobs)
+            {
+                # We didn't remove any jobs, so we'll sleep and try again
+                Start-Sleep -Milliseconds 100
+            }
         }
 
-        if ( $totalContentCount -gt 0 )
-        {
-            $percentComplete = ($contentRetrieved/$totalContentCount)*100
-        }
-        else
-        {
-            $percentComplete = 100
-        }
+        $percentComplete = ($script:contentRetrieved/$totalContentCount)*100
         Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
+    }
+
+    # We now need to wait for all jobs to complete
+    for ($i=$activeJobs.Count-1; $i -ge 0; $i--)
+    {
+        while ($activeJobs[$i].State -eq "Running")
+        {
+            LogVerbose "Waiting for job $i to finish"
+            Start-Sleep -Milliseconds 1000
+            $percentComplete = ($script:contentRetrieved/$totalContentCount)*100
+            Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
+        }
     }
     Write-Progress -Activity $progressActivity -Status "100% complete" -Completed
 }
