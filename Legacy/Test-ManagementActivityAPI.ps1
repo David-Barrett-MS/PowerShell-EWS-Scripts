@@ -115,7 +115,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.0.9"
+$script:ScriptVersion = "1.1.0"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -919,8 +919,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
     $script:contentRetrieved = 0
     $totalContentCount = $contentUrls.Length
 
-    $global:activeJobs = @()
-    $global:SaveContentPath = $SaveContentPath
+    $activeJobs = @()
 
     if ($ListContentDate)
     {
@@ -932,9 +931,9 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
     }
 
     Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
-    $auth = "Bearer $(GetValidAccessToken)"
     foreach ($contentUrl in $contentUrls)
     {
+        $auth = "Bearer $(GetValidAccessToken)"
         $downloadJob = Start-Job -Scriptblock { param($url, $auth, $savePath) DownloadContentBlob $url $auth $savePath } -ArgumentList ($contentUrl, $auth, $SaveContentPath) -InitializationScript $downloadFunction
         $activeJobs += $downloadJob
         while ($activeJobs.Count -ge $MaxRetrieveContentJobs)
@@ -946,7 +945,9 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
                 if ($activeJobs[$i].State -ne "Running")
                 {
                     $activeJobs.RemoveAt($i)
-                    $script:contentRetrieved++
+                    if ($activeJobs[$i].State -ne "Failed") {
+                        $script:contentRetrieved++
+                    }
                 }
             }
             if ($activeJobs.Count -ge $MaxRetrieveContentJobs)
@@ -967,9 +968,10 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
         {
             LogVerbose "Waiting for job $i to finish"
             Start-Sleep -Milliseconds 1000
-            $percentComplete = ($script:contentRetrieved/$totalContentCount)*100
-            Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
         }
+        $script:contentRetrieved++
+        $percentComplete = ($script:contentRetrieved/$totalContentCount)*100
+        Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
     }
     Write-Progress -Activity $progressActivity -Status "100% complete" -Completed
 }
