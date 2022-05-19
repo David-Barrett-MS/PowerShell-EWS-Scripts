@@ -115,7 +115,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.1.0"
+$script:ScriptVersion = "1.1.1"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -863,7 +863,8 @@ function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePa
     # Download the specified content blob and save to file
     $auditData = ""
     #$auditData = GetRest $contentUrl
-    $auditData = Invoke-WebRequest -Uri $contentUrl -Headers @{"Authorization" = $auth} -Method Get
+    $auditResponse = Invoke-WebRequest -Uri $contentUrl -Headers @{"Authorization" = $auth} -Method Get
+    $auditData = $auditResponse.Content
 
     if ($auditData.Length -gt 0)
     {
@@ -893,7 +894,7 @@ function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePa
                     $i = 1
                     while ($(Test-Path "$outputFile.$i.txt"))
                         { $i++ }
-                    $outputFile = "$outputFile.$i.txt"
+                    $outputFile = "$outputFile.$i"
                 }
                 else
                 {
