@@ -115,11 +115,10 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.1.1"
+$script:ScriptVersion = "1.1.2"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $AvailableContentTypes = @("Audit.AzureActiveDirectory", "Audit.Exchange", "Audit.SharePoint", "Audit.General", "DLP.All")
 
@@ -862,13 +861,11 @@ function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePa
 {
     # Download the specified content blob and save to file
     $auditData = ""
-    #$auditData = GetRest $contentUrl
     $auditResponse = Invoke-WebRequest -Uri $contentUrl -Headers @{"Authorization" = $auth} -Method Get
     $auditData = $auditResponse.Content
 
     if ($auditData.Length -gt 0)
     {
-        Write-Host "Saving audit data"
         if (![String]::IsNullOrEmpty($savePath))
         {
             # Save this data
@@ -883,7 +880,6 @@ function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePa
             if ($(Test-Path "$outputFile.txt"))
             {
                 # Output file already exists
-                Write-Verbose "Already retrieved data blob: $outputFile.txt"
 
                 # We perform a sanity check here to ensure that the blob we have already retrieved is the same data
                 $existingBlob = [IO.File]::ReadAllText("$outputFile.txt")
@@ -898,6 +894,7 @@ function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePa
                 }
                 else
                 {
+                    Write-Host "Data already retrieved: $outputFile.txt"
                     $outputFile = ""
                 }
             }
@@ -910,7 +907,7 @@ function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePa
     }
     else
     {
-        Write-Verbose "No data returned from $contentUrl"
+        Write-Host "No data returned from $contentUrl"
     }
 }
 }
@@ -945,6 +942,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
             {
                 if ($activeJobs[$i].State -ne "Running")
                 {
+                    Receive-Job $activeJobs[$i]
                     $activeJobs.RemoveAt($i)
                     if ($activeJobs[$i].State -ne "Failed") {
                         $script:contentRetrieved++
@@ -968,11 +966,14 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
         while ($activeJobs[$i].State -eq "Running")
         {
             LogVerbose "Waiting for job $i to finish"
-            Start-Sleep -Milliseconds 1000
+            $activeJobs[$i] | Wait-Job | out-null
         }
+        Receive-Job $activeJobs[$i]
         $script:contentRetrieved++
         $percentComplete = ($script:contentRetrieved/$totalContentCount)*100
         Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
     }
     Write-Progress -Activity $progressActivity -Status "100% complete" -Completed
 }
+
+Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) finished" Green
