@@ -14,35 +14,35 @@
 
 
 param (
-    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
+    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed.")]
     [ValidateNotNullOrEmpty()]
     [string]$Mailbox,
 
-    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox will be accessed (instead of the main mailbox)")]
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox will be accessed (instead of the main mailbox).")]
     [switch]$Archive,
 		
-    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, folder path is required and the path points to a public folder")]
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, folder path is required and the path points to a public folder.")]
     [switch]$PublicFolders,
 
     [Parameter(Mandatory=$False,HelpMessage="Folder to search - if omitted, the mailbox message root folder is assumed.")]
     $FolderPath,
 
-    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed")]
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed.")]
     [switch]$ProcessSubfolders,
 
-    [Parameter(Mandatory=$False,HelpMessage="When specified, hidden (associated) items of the folder are processed (normal items are ignored)")]
+    [Parameter(Mandatory=$False,HelpMessage="When specified, hidden (associated) items of the folder are processed (normal items are ignored).")]
     [switch]$AssociatedItems,
 	
-    [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the item(s) (must be supplied as hash table @{})")]
+    [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the item(s) (must be supplied as hash table @{}).")]
     $AddItemProperties,
     
-    [Parameter(Mandatory=$False,HelpMessage="Deletes the given property(ies) from the item(s)")]
+    [Parameter(Mandatory=$False,HelpMessage="Deletes the given property(ies) from the item(s).")]
     $DeleteItemProperties,
     
-    [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as read")]
+    [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as read.")]
     [switch]$MarkAsRead,
     
-    [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as unread")]
+    [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as unread.")]
     [switch]$MarkAsUnread,
 
     [Parameter(Mandatory=$False,HelpMessage="Actions will only apply to contact objects that have the given SMTP address as their email address.  Supports multiple SMTP addresses passed as an array.")]
@@ -69,7 +69,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Resends the message to the recipient declared in the message Received: header (if present).")]
     [switch]$ResendToForInReceivedHeader,
 
-    [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted")]
+    [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted.")]
     [switch]$DeleteContactPhoto,
     
     [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s). Default is a soft delete.")]
@@ -78,7 +78,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="When used with -Delete, forces a hard delete of the item(s).")]
     [switch]$HardDelete,
 
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange ).  Do not use any other restrictions with this option.")]
     [string]$SearchFilter,
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have recipients not from the listed domains will be matched.")]
@@ -114,10 +114,10 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that have values in the given properties will be updated.")]
     $PropertiesMustExist,
 
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary @{""propId"" = ""value""}")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary: @{""propId"" = ""value""}")]
     $PropertiesMustMatch,
 
-    [Parameter(Mandatory=$False,HelpMessage="Outputs any matching items (can be collected for further processing)")]
+    [Parameter(Mandatory=$False,HelpMessage="Outputs any matching items (can be collected for further processing).")]
     [switch]$ListMatches,
 
     [Parameter(Mandatory=$False,HelpMessage="If set, a separate GetItem request is sent to retrieve each item.  Much slower (batch processing is used otherwise), but may need to be used if querying large properties.")]
@@ -129,11 +129,11 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="The number of items that will be requested in a single GetItem call.  Reduce this significantly (e.g. 10) if items are large and need to be retrieved.")]
     $GetItemBatchSize = 500,
     
-    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
     [alias("Credentials")]
     [System.Management.Automation.PSCredential]$Credential,
 				
-    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available")]
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available.")]
     [switch]$OAuth,
 
     [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
@@ -154,40 +154,40 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     $OAuthCertificate = $null,
 	
-    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
     [switch]$Impersonate,
 	
-    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used).")]	
     [string]$EwsUrl,
 
-    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl).")]
     [switch]$Office365,
 	
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only TLS 1.2 connections will be negotiated")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only TLS 1.2 connections will be negotiated.")]
     [switch]$ForceTLS12,
 	
-    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed).")]	
     [string]$EWSManagedApiPath = "",
 	
-    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate).")]	
     [switch]$IgnoreSSLCertificate,
 	
-    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing AutoDiscover.")]	
     [switch]$AllowInsecureRedirection,
 	
-    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified.")]	
     [string]$LogFile = "",
 
-    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file.")]	
     [string]$TraceFile,
 
-    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
+    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled).")]
     [switch]$FastFileLogging,
 
-    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged)")]	
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.9"
+$script:ScriptVersion = "1.3.0"
 
 if ($ForceTLS12)
 {
@@ -1662,13 +1662,24 @@ function ItemPropertiesMatchRequirements($item)
                 elseif ($requiredProperty.Tag -ne $null -and $requiredProperty.Tag -eq $itemProperty.PropertyDefinition.Tag)
                 {
                     # Check MAPI extended property
-                    $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                    if ($itemProperty.PropertyDefinition.MapiType -eq [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
+                    {
+                        # This is a binary property, so we use Compare-Object (which will return null if the objects are identical)
+                        if ( (Compare-Object -ReferenceObject $script:propertiesMustMatchEws[$requiredProperty] -DifferenceObject $itemProperty.Value) -eq $null)
+                        {
+                            $propMatches = $true
+                        }
+                    }
+                    else
+                    {
+                        $propMatches = ($itemProperty.Value -eq $script:propertiesMustMatchEws[$requiredProperty])
+                    }
                     break
                 }
             }
-
             if (!$propMatches)
             {
+                # If any single property does not match, we don't bother to check any further
                 Write-Verbose "$requiredProperty does not match, ignoring item"
                 return $false
             }
@@ -2757,14 +2768,20 @@ function ProcessMailbox()
     {
         Log "$($Mailbox): $($script:itemsMatched) item(s) matched specified criteria"
         Log "$($Mailbox): $($script:itemsAffected) item(s) would be changed (but -WhatIf was specified so no action was taken)"
-        Log "$($Mailbox): $($script:itemsResent) item(s) would be resent (but -WhatIf was specified so no action was taken)"
+        if ($Resend)
+        {
+            Log "$($Mailbox): $($script:itemsResent) item(s) would be resent (but -WhatIf was specified so no action was taken)"
+        }
         Log "$($Mailbox): $($script:itemsDeleted) item(s) would be deleted (but -WhatIf was specified so no action was taken)"
     }
     else
     {
         Log "$($Mailbox): $($script:itemsMatched) item(s) matched specified criteria"
         Log "$($Mailbox): $($script:itemsAffected) item(s) were changed"
-        Log "$($Mailbox): $($script:itemsResent) item(s) were resent"
+        if ($Resend)
+        {
+            Log "$($Mailbox): $($script:itemsResent) item(s) were resent"
+        }
         Log "$($Mailbox): $($script:itemsDeleted) item(s) were deleted"
     }
 }
