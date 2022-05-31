@@ -115,7 +115,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.1.2"
+$script:ScriptVersion = "1.1.3"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -772,80 +772,92 @@ if ($List)
 #
 ########################################################
 
-if ([String]::IsNullOrEmpty($ContentType))
-{
-    # If we don't have a ContentType specified, we default to Audit.General
-    $ContentType = "Audit.General"
-}
 
-$contentUrls = @()
-$script:nextPageUri = ""
-if ($ListContent -or $RetrieveContent)
-{
-    if ($ListContentDate)
-    {
-        # We have a specified date to retrieve, so work out start and end date
-        $startDate = $null
-        if ($ListContentDate.GetType().Name.Equals("DateTime"))
-        {
-            # If date is supplied as DateTime, we just use the supplied value.  String conversion can cause DateFormat issues (e.g. UK->US date issues)
-            $startDate = $ListContentDate
-        }
-        else
-        {
-            $startDate = [DateTime]::Parse($ListContentDate.ToString())
-        }
+$script:contentUrls = @()
 
-        if ($startDate)
-        {
-            $startDate = [DateTime]::new($startDate.Year, $startDate.Month, $startDate.Day, 0, 0, 0)
-            $endDate = $startDate.AddDays(1)
-            $startDateStr = $startDate.ToString("yyyy-MM-ddTHH:mm:ss")
-            $endDateStr = [String]::Format("{0:yyyy-MM-ddTHH:mm:ss}", $endDate)
-            $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$ContentType&PublisherIdentifier=$PublisherId&startTime=$startDateStr&endTime=$endDateStr"
-        }
-        else
-        {
-            Log "Failed to parse ListContentDate: $ListContentDate"
-            Exit
-        }
-        Log "Listing content date range: Start = $startDate   End = $endDate" Green
-    }
-    else
+function ListContent($listContentType)
     {
-        # This will retrieve the data for the current 24 hour period
-        LogVerbose "Listing content from last 24 hours"
-        $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$ContentType&PublisherIdentifier=$PublisherId"
-    }
-
-    # Retrieve the content links
-    while ( ![String]::IsNullOrEmpty($script:nextPageUri) )
+    $script:nextPageUri = ""
+    if ($ListContent -or $RetrieveContent)
     {
-        $content = GetRest $script:nextPageUri
-        if ($content -ne $null)
+        if ($ListContentDate)
+        {
+            # We have a specified date to retrieve, so work out start and end date
+            $startDate = $null
+            if ($ListContentDate.GetType().Name.Equals("DateTime"))
             {
-            if (!$RetrieveContent)
-            {
-                $content
+                # If date is supplied as DateTime, we just use the supplied value.  String conversion can cause DateFormat issues (e.g. UK->US date issues)
+                $startDate = $ListContentDate
             }
             else
             {
-                $jsonContent = ConvertFrom-JSON $content
-                Log "List content: $($jsonContent.Count) content blob(s) available for download" Green
-                foreach ($contentBlob in $jsonContent)
+                $startDate = [DateTime]::Parse($ListContentDate.ToString())
+            }
+
+            if ($startDate)
+            {
+                $startDate = [DateTime]::new($startDate.Year, $startDate.Month, $startDate.Day, 0, 0, 0)
+                $endDate = $startDate.AddDays(1)
+                $startDateStr = $startDate.ToString("yyyy-MM-ddTHH:mm:ss")
+                $endDateStr = [String]::Format("{0:yyyy-MM-ddTHH:mm:ss}", $endDate)
+                $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$ContentType&PublisherIdentifier=$PublisherId&startTime=$startDateStr&endTime=$endDateStr"
+            }
+            else
+            {
+                Log "Failed to parse ListContentDate: $ListContentDate"
+                Exit
+            }
+            Log "Listing content date range: Start = $startDate   End = $endDate" Green
+        }
+        else
+        {
+            # This will retrieve the data for the current 24 hour period
+            LogVerbose "Listing content from last 24 hours"
+            $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$ContentType&PublisherIdentifier=$PublisherId"
+        }
+
+        # Retrieve the content links
+        while ( ![String]::IsNullOrEmpty($script:nextPageUri) )
+        {
+            $content = GetRest $script:nextPageUri
+            if ($content -ne $null)
                 {
-                    if ($contentBlob)
+                if (!$RetrieveContent)
+                {
+                    $content
+                }
+                else
+                {
+                    $jsonContent = ConvertFrom-JSON $content
+                    Log "List content: $($jsonContent.Count) content blob(s) available for download" Green
+                    foreach ($contentBlob in $jsonContent)
                     {
-                        if ($contentBlob.ContentUri)
+                        if ($contentBlob)
                         {
-                            $contentUrls += $contentBlob.ContentUri
-                            LogVerbose "Content Url added to retrieve list: $($contentBlob.ContentUri)"
+                            if ($contentBlob.ContentUri)
+                            {
+                                $script:contentUrls += $contentBlob.ContentUri
+                                LogVerbose "Content Url added to retrieve list: $($contentBlob.ContentUri)"
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+if ([String]::IsNullOrEmpty($ContentType))
+{
+    # If we don't have a ContentType specified, we retrieve all of them
+    foreach ($ContentType in $AvailableContentTypes)
+    {
+        ListContent $ContentType
+    }
+}
+else
+{
+    ListContent $ContentType
 }
 
 ########################################################
@@ -929,7 +941,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
     }
 
     Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
-    foreach ($contentUrl in $contentUrls)
+    foreach ($contentUrl in $script:contentUrls)
     {
         $auth = "Bearer $(GetValidAccessToken)"
         $downloadJob = Start-Job -Scriptblock { param($url, $auth, $savePath) DownloadContentBlob $url $auth $savePath } -ArgumentList ($contentUrl, $auth, $SaveContentPath) -InitializationScript $downloadFunction
