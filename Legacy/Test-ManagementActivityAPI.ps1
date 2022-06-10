@@ -115,7 +115,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.1.3"
+$script:ScriptVersion = "1.1.4"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -800,7 +800,7 @@ function ListContent($listContentType)
                 $endDate = $startDate.AddDays(1)
                 $startDateStr = $startDate.ToString("yyyy-MM-ddTHH:mm:ss")
                 $endDateStr = [String]::Format("{0:yyyy-MM-ddTHH:mm:ss}", $endDate)
-                $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$ContentType&PublisherIdentifier=$PublisherId&startTime=$startDateStr&endTime=$endDateStr"
+                $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$listContentType&PublisherIdentifier=$PublisherId&startTime=$startDateStr&endTime=$endDateStr"
             }
             else
             {
@@ -813,7 +813,7 @@ function ListContent($listContentType)
         {
             # This will retrieve the data for the current 24 hour period
             LogVerbose "Listing content from last 24 hours"
-            $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$ContentType&PublisherIdentifier=$PublisherId"
+            $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$listContentType&PublisherIdentifier=$PublisherId"
         }
 
         # Retrieve the content links
@@ -830,14 +830,17 @@ function ListContent($listContentType)
                 {
                     $jsonContent = ConvertFrom-JSON $content
                     Log "List content: $($jsonContent.Count) content blob(s) available for download" Green
-                    foreach ($contentBlob in $jsonContent)
+                    if ($jsonContent.Count -gt 0)
                     {
-                        if ($contentBlob)
+                        foreach ($contentBlob in $jsonContent)
                         {
-                            if ($contentBlob.ContentUri)
+                            if ($contentBlob)
                             {
-                                $script:contentUrls += $contentBlob.ContentUri
-                                LogVerbose "Content Url added to retrieve list: $($contentBlob.ContentUri)"
+                                if ($contentBlob.ContentUri)
+                                {
+                                    $script:contentUrls += $contentBlob.ContentUri
+                                    LogVerbose "Content Url added to retrieve list: $($contentBlob.ContentUri)"
+                                }
                             }
                         }
                     }
@@ -845,6 +848,7 @@ function ListContent($listContentType)
             }
         }
     }
+    LogVerbose "Finished ListContent for $listContentType"
 }
 
 if ([String]::IsNullOrEmpty($ContentType))
@@ -929,7 +933,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
     $script:contentRetrieved = 0
     $totalContentCount = $contentUrls.Length
 
-    $activeJobs = @()
+    $activeJobs = New-Object System.Collections.ArrayList
 
     if ($ListContentDate)
     {
@@ -944,8 +948,9 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
     foreach ($contentUrl in $script:contentUrls)
     {
         $auth = "Bearer $(GetValidAccessToken)"
+        LogVerbose "Downloading content blob: $contentUrl"
         $downloadJob = Start-Job -Scriptblock { param($url, $auth, $savePath) DownloadContentBlob $url $auth $savePath } -ArgumentList ($contentUrl, $auth, $SaveContentPath) -InitializationScript $downloadFunction
-        $activeJobs += $downloadJob
+        $activeJobs.Add($downloadJob)
         while ($activeJobs.Count -ge $MaxRetrieveContentJobs)
         {
             # We have enough jobs running, so we need to wait until at least one has completed
@@ -955,10 +960,8 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
                 if ($activeJobs[$i].State -ne "Running")
                 {
                     Receive-Job $activeJobs[$i]
+                    LogVerbose "Completed job state: $($activeJobs[$i].State)"
                     $activeJobs.RemoveAt($i)
-                    if ($activeJobs[$i].State -ne "Failed") {
-                        $script:contentRetrieved++
-                    }
                 }
             }
             if ($activeJobs.Count -ge $MaxRetrieveContentJobs)
