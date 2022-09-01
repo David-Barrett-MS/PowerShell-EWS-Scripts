@@ -20,9 +20,6 @@ param (
 	[Parameter(Mandatory=$True,HelpMessage="InternetMessageId being searched for")]
 	[string]$InternetMessageId,
 	
-	[Parameter(Mandatory=$False,HelpMessage="The sender (if not specified, all senders will match)")]
-	[string]$Sender,
-	
 	[Parameter(Mandatory=$False,HelpMessage="If this switch is set, any matching items will be deleted (otherwise, no changes are made)")]
 	[switch]$Delete,
 
@@ -33,7 +30,7 @@ param (
     [switch]$OAuth,
 
     [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
+    [string]$OAuthClientId = "",
 
     [Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
     [string]$OAuthTenantId = "",
@@ -65,7 +62,7 @@ param (
 	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
 	[string]$TraceFile
 )
-$script:ScriptVersion = "1.0.0"
+$script:ScriptVersion = "1.0.1"
 
 
 function LoadLibraries()
@@ -591,7 +588,10 @@ Function ProcessFolder()
             {
                 foreach ($item in $FindResults.Items)
                 {
-                    $item.Delete([Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    if ($Delete)
+                    {
+                        $item.Delete([Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete)
+                    }
                     $deletedFromFolder++
                 }
             }
@@ -604,7 +604,14 @@ Function ProcessFolder()
 	}
     if ($deletedFromFolder -gt 0)
     {
-        Write-Host "$deletedFromFolder items matched and were deleted from folder $($Folder.DisplayName)" -ForegroundColor Green
+        if ($Delete)
+        {
+            Write-Host "$deletedFromFolder items matched and were deleted from folder $($Folder.DisplayName)" -ForegroundColor Green
+        }
+        else
+        {
+            Write-Host "$deletedFromFolder items matched in folder $($Folder.DisplayName)" -ForegroundColor Green
+        }
     }
     else
     {
@@ -645,7 +652,14 @@ function ProcessMailbox($TargetMailbox)
     $script:itemsDeleted = 0
     ProcessFolder $mailboxRoot
 
-    Write-Host "$($script:itemsDeleted) items matched and were deleted from $TargetMailbox" -ForegroundColor Green
+    if ($Delete)
+    {
+        Write-Host "$($script:itemsDeleted) items matched and were deleted from $TargetMailbox" -ForegroundColor Green
+    }
+    else
+    {
+        Write-Host "$($script:itemsDeleted) items matched (but were not deleted as -Delete not set) from $TargetMailbox" -ForegroundColor Yellow
+    }
 }
 
 
