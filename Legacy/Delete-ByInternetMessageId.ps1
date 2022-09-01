@@ -43,7 +43,10 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Please note that certificate auth requires the MSAL dll to be available.")]
     $OAuthCertificate = $null,
-				
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
+    [switch]$Impersonate,
+    				
 	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
 	[string]$EwsUrl,
 
@@ -62,7 +65,7 @@ param (
 	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
 	[string]$TraceFile
 )
-$script:ScriptVersion = "1.0.1"
+$script:ScriptVersion = "1.0.2"
 
 
 function LoadLibraries()
