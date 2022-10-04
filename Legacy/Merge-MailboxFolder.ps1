@@ -1,7 +1,7 @@
 #
 # Merge-MailboxFolder.ps1
 #
-# By David Barrett, Microsoft Ltd. 2015-2021. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2015-2022. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -164,7 +164,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.2"
+$script:ScriptVersion = "1.2.3"
 
 
 # Define our functions
@@ -329,7 +329,7 @@ function LoadLibraries()
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
-    if (!script:msalApiLoaded)
+    if (!$script:msalApiLoaded)
     {
         $msalLocation = @()
         $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
@@ -454,29 +454,29 @@ function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
-    if ( $script:authenticationResult -eq $null ) { return }
+    if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
     if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
-    LogVerbose("OAuth access token invalid, attempting to renew")
+    LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
     { 
-        Log "OAuth Token renewal failed"
+        Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
         exit # We no longer have access to the mailbox, so we stop here
     }
 
-    Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
             $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
         }
-        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
 }
 
