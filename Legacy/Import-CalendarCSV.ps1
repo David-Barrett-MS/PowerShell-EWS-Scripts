@@ -16,7 +16,7 @@ param(
     [ValidateNotNullOrEmpty()]
     [string]$CSVFileName,
 
-    [Parameter(Position=2,Mandatory=$False,HelpMessage="Specifies the mailbox into which the calendar items will be imported.")]
+    [Parameter(Position=2,Mandatory=$True,HelpMessage="Specifies the mailbox into which the calendar items will be imported.")]
     [ValidateNotNullOrEmpty()]
     [string]$Mailbox,
 
@@ -71,27 +71,6 @@ param(
     [string]$TraceFile
 )
 
-Function ShowParams()
-{
-	Write-Host "Import-CalendarCSV -CSVFileName <string> -EmailAddress <string>"
-	Write-Host "                   [-Username <string> -Password <string> [-Domain <string>]]"
-	Write-Host "                   [-Impersonate <bool>]"
-	Write-Host "                   [-EwsUrl <string>]"
-	Write-Host "                   [-EWSManagedApiPath <string>]"
-	Write-Host "";
-	Write-Host "Required:"
-	Write-Host " -CSVFileName : Filename of the CSV file to import appointments for this user from."
-	Write-Host " -EmailAddress : Mailbox SMTP email address"
-	Write-Host ""
-	Write-Host "Optional:"
-	Write-Host " -Username : Username for the account being used to connect to EWS (if not specified, current user is assumed)"
-	Write-Host " -Password : Password for the specified user (required if username specified)"
-	Write-Host " -Domain : If specified, used for authentication (not required even if username specified)"
-	Write-Host " -Impersonate : Set to $true to use impersonation."
-	Write-Host " -EwsUrl : Forces a particular EWS URl (otherwise autodiscover is used, which is recommended)"
-	Write-Host " -EWSManagedApiDLLFilePath : Full and path to the DLL for EWS Managed API (if not specified, default path for v1.1 is used)"
-	Write-Host ""
-}
 
 $RequiredFields=@{
 	"Subject" = "Subject";
@@ -101,7 +80,7 @@ $RequiredFields=@{
 	"EndTime" = "End Time"
 }
 
-$script:ScriptVersion = "2.0.0"
+$script:ScriptVersion = "2.0.1"
 
 
 # Define our functions
@@ -724,7 +703,7 @@ if ($GenerateSampleCSV)
     try
     {
         $csvData.ToString() | Out-File $CSVFileName
-        Write-Host "Successfully exported sample CSV data to $CSVFileName" -ForegroundColor Green
+        Log "Successfully exported sample CSV data to $CSVFileName" Green
     }
     catch {}
 }
@@ -781,7 +760,7 @@ $service = CreateService($Mailbox)
 $CalendarFolder = [Microsoft.Exchange.WebServices.Data.CalendarFolder]::Bind($service, [Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Calendar)
 if (!$CalendarFolder)
 {
-    Write-Host "Failed to locate calendar folder" -ForegroundColor Red
+    Log "Failed to locate calendar folder" Red
     exit
 }
 
@@ -820,7 +799,7 @@ foreach ($CalendarItem in $CSVFile)
 			    catch
 			    {
 				    # Failed to write this field
-				    Write-Host "Failed to set custom field $($Field.Name)" -ForegroundColor yellow
+				    Log "Failed to set custom field $($Field.Name)" yellow
 			    }
 		    }
 	    }
@@ -828,16 +807,16 @@ foreach ($CalendarItem in $CSVFile)
         try
         {
 		    $Appointment.Save([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Calendar)
-		    Write-Host "Created $($CalendarItem."Subject")" -ForegroundColor green
+		    Log "Created $($CalendarItem."Subject")" green
         }
         catch
         {
-            Write-Host "Failed to create appointment (error on save): $($CalendarItem."Subject")" -ForegroundColor red    
+            Log "Failed to create appointment (error on save): $($CalendarItem."Subject")" red
         }
     }
 	else
 	{
 		# Failed to set a required field
-		Write-Host "Failed to create appointment (required field missing): $($CalendarItem."Subject")" -ForegroundColor red
+		Log "Failed to create appointment (required field missing): $($CalendarItem."Subject")" red
 	}
 }
