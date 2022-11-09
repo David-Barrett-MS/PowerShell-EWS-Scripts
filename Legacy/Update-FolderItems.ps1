@@ -187,7 +187,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.3.0"
+$script:ScriptVersion = "1.3.1"
 
 if ($ForceTLS12)
 {
@@ -2266,10 +2266,11 @@ Function RemoveProcessedItemsFromList()
             }
             else
             {
-                if ($results[$i].ErrorCode -eq "ErrorMoveCopyFailed")
+                if ($results[$i].ErrorCode -eq "ErrorMoveCopyFailed" -or $results[$i].ErrorCode -eq "ErrorInvalidOperation")
                 {
                     # This is a permanent error, so we remove the item from the list
                     $Items.Remove($requestedItems[$i])
+                    $script:itemsWithError++
                 }
                 LogVerbose("Error $($results[$i].ErrorCode) reported for item: $($requestedItems[$i].UniqueId)")
                 $failed++
@@ -2720,6 +2721,7 @@ function ProcessMailbox()
     $script:itemsDeleted = 0
     $script:itemsResent = 0
     $script:itemsMatched = 0
+    $script:itemsWithError = 0
 
     # FolderPath can support arrays (list of folders)
     if ([String]::IsNullOrEmpty($FolderPath))
@@ -2783,6 +2785,10 @@ function ProcessMailbox()
             Log "$($Mailbox): $($script:itemsResent) item(s) were resent"
         }
         Log "$($Mailbox): $($script:itemsDeleted) item(s) were deleted"
+    }
+    if ($script:itemsWithError -gt 0)
+    {
+        Log "$($Mailbox): $($script:itemsWithError) item(s) FAILED TO PROCESS" Red
     }
 }
 
