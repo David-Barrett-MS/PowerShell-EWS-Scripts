@@ -134,9 +134,6 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl)")]
     [switch]$Office365,
 
-    [Parameter(Mandatory=$False,HelpMessage="By default, script will specify Exchange 2010 (to work with 2010 and higher).  If using 2007, this switch must be specified.")]
-    [switch]$Exchange2007,
-
     [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]
     [string]$EWSManagedApiPath = "",
 	
@@ -164,7 +161,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.3"
+$script:ScriptVersion = "1.2.4"
 
 
 # Define our functions
@@ -591,11 +588,12 @@ Function CreateTraceListener($service)
 	    $Params.ReferencedAssemblies.Add("System.dll") | Out-Null
         $Params.ReferencedAssemblies.Add($EWSManagedApiPath) | Out-Null
 
-        $traceFileForCode = $traceFile.Replace("\", "\\")
+        $traceFileForCode = ""
 
         if (![String]::IsNullOrEmpty($TraceFile))
         {
             Log "Tracing to: $TraceFile"
+            $traceFileForCode = $traceFile.Replace("\", "\\")
         }
 
         $TraceListenerClass = @"
@@ -613,12 +611,23 @@ Function CreateTraceListener($service)
 
 			        public EWSTracer()
 			        {
+"@
+        if (![String]::IsNullOrEmpty(($traceFileForCode)))
+        {
+            $TraceListenerClass = 
+@"
+$TraceListenerClass
 				        try
 				        {
 					        _traceStream = File.AppendText("$traceFileForCode");
 				        }
 				        catch { }
-			        }
+"@
+        }
+
+            $TraceListenerClass = 
+@"
+$TraceListenerClass			        }
 
 			        ~EWSTracer()
 			        {
@@ -672,8 +681,6 @@ Function CreateTraceListener($service)
         {
             $TraceAssembly=$TraceCompilation.CompiledAssembly
             $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
-            # Attach the trace listener to the Exchange service
-            $service.TraceListener = $script:Tracer
         }
     }
 }
@@ -692,7 +699,6 @@ Function DecreaseBatchSize()
 Function Throttled()
 {
     # Checks if we've been throttled.  If we have, we wait for the specified number of BackOffMilliSeconds before returning
-
     if ([String]::IsNullOrEmpty($script:Tracer.LastResponse))
     {
         return $false # Throttling does return a response, if we don't have one, then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
@@ -1723,14 +1729,7 @@ function CreateService($smtpAddress)
     }
 
     # Create new service
-    if ($Exchange2007)
-    {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2007_SP1)
-    }
-    else
-    {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
-    }
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
 
     # Do we need to use OAuth?
     if ($OAuth)
@@ -1804,6 +1803,7 @@ function CreateService($smtpAddress)
         CreateTraceListener $exchangeService
         if ($script:Tracer)
         {
+            $exchangeService.TraceListener = $script:Tracer
             $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
             $exchangeService.TraceEnabled = $True
         }
