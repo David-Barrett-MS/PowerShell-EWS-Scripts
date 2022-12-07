@@ -60,14 +60,20 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
     [DateTime]$OnlyItemsCreatedBefore,
 
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent of received before the specified date will be processed (useful for archiving).")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent or received before the specified date will be processed (useful for archiving).")]
     [DateTime]$OnlyItemsSentReceivedBefore,
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were created before the specified date will be processed (useful for archiving)")]
     [DateTime]$OnlyItemsCreatedAfter,
 
-    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent of received before the specified date will be processed (useful for archiving).")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were sent or received after the specified date will be processed (useful for archiving).")]
     [DateTime]$OnlyItemsSentReceivedAfter,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were modified before the specified date will be processed.")]
+    [DateTime]$OnlyItemsModifiedBefore,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only items that were modified after the specified date will be processed.")]
+    [DateTime]$OnlyItemsModifiedAfter,
 
     [Parameter(Mandatory=$False,HelpMessage="When specified, the folders in MergeFolderList are identified by EwsId (not path)")]
     [switch]$ByFolderId,
@@ -161,7 +167,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.4"
+$script:ScriptVersion = "1.2.5"
 
 
 # Define our functions
@@ -1304,16 +1310,24 @@ Function MoveItems()
     {
         $searchFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeCreated, $OnlyItemsCreatedBefore)
     }
-    elseif ($OnlyItemsSentReceivedBefore)
-    {
-        $searchFilters +=  New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent, $OnlyItemsSentReceivedBefore)
-        $searchFilters +=  New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived, $OnlyItemsSentReceivedBefore)
-    }
     if ($OnlyItemsCreatedAfter)
     {
         $searchFilters +=  New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeCreated, $OnlyItemsCreatedAfter)
     }
-    elseif ($OnlyItemsSentReceivedAfter)
+    if ($OnlyItemsModifiedBefore)
+    {
+        $searchFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime, $OnlyItemsModifiedBefore)
+    }
+    if ($OnlyItemsModifiedAfter)
+    {
+        $searchFilters +=  New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime, $OnlyItemsModifiedAfter)
+    }
+    if ($OnlyItemsSentReceivedBefore)
+    {
+        $searchFilters +=  New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent, $OnlyItemsSentReceivedBefore)
+        $searchFilters +=  New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived, $OnlyItemsSentReceivedBefore)
+    }
+    if ($OnlyItemsSentReceivedAfter)
     {
         $searchFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent, $OnlyItemsSentReceivedAfter)
         $searchFilters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived, $OnlyItemsSentReceivedAfter)
@@ -1340,7 +1354,7 @@ Function MoveItems()
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView($PageSize, $Offset, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
 		$View.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,
             [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeCreated, [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeSent, [Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeReceived,
-            [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
+            [Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime, [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::From)
         if ($AssociatedItems)
         {
             $View.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Associated
@@ -1824,7 +1838,7 @@ function ProcessMailbox()
 
     $script:publicFolders = $false
 
-    Write-Host ([string]::Format("Processing mailbox {0}", $SourceMailbox)) -ForegroundColor Gray
+    Write-Host "Processing mailbox $SourceMailbox" -ForegroundColor Gray
 
     if ( !([String]::IsNullOrEmpty($script:originalLogFile)) )
     {
@@ -2030,6 +2044,7 @@ function ProcessMailbox()
             Write-Host "Merge parameters invalid: merge $SecondaryFolder into $PrimaryFolder" -ForegroundColor Red
         }
     }
+    Write-Host "Finished processing mailbox $SourceMailbox" -ForegroundColor Gray
 }
 
 
