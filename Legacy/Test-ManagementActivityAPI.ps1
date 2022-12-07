@@ -93,10 +93,16 @@ param (
     [string]$SaveContentPath,
 
     [Parameter(Mandatory=$False,HelpMessage="Maximum number of jobs that can run at one time (in parallel) to download content.")]
-    [int]$MaxRetrieveContentJobs = 5,
+    [int]$MaxRetrieveContentJobs = 32,
 
-    [Parameter(Mandatory=$False,HelpMessage="Date for which to retrieve content")]
+    [Parameter(Mandatory=$False,HelpMessage="Date for which to retrieve content (if specified, will retrieve the 24 hours of data for this date).  Do not specify start and end time.")]
     $ListContentDate,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, this is the start of the time range that will be requested.  Do not use with -ListContentDate.")]
+    $ListContentStartTime,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, this is the start of the time range that will be requested.  Do not use with -ListContentDate.")]
+    $ListContentEndTime,
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, the script attempts to register an application in Azure using the given parameters (and with permission to access Management API logs)")]
     [switch]$RegisterAzureApplication,
@@ -115,7 +121,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="HTTP trace file - all HTTP request and responses will be logged to this file")]	
     [string]$DebugPath = ""
 )
-$script:ScriptVersion = "1.1.4"
+$script:ScriptVersion = "1.1.5"
 
 # We work out the root Uri for our requests based on the tenant Id
 $rootUri = "https://manage.office.com/api/v1.0/$tenantId/activity/feed"
@@ -362,13 +368,14 @@ function RetriableInvoke-WebRequest
     $retries = 0
     $result = $null
 
-    # Check for the auth header (if we don't have one, add it)
+    # Ensure we have a valid access token
     if ($Headers -ne $null)
     {
-        if (-not $Headers.ContainsKey("Authorization"))
+        if ($Headers.ContainsKey("Authorization"))
         {
-            $Headers.Add("Authorization", "Bearer $(GetValidAccessToken)")
+            $Headers.Remove("Authorization")
         }
+        $Headers.Add("Authorization", "Bearer $(GetValidAccessToken)")
     }
     else
     {
@@ -811,17 +818,36 @@ function ListContent($listContentType)
         }
         else
         {
-            # This will retrieve the data for the current 24 hour period
-            LogVerbose "Listing content from last 24 hours"
-            $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$listContentType&PublisherIdentifier=$PublisherId"
+            if ($ListContentStartTime)
+            {
+                if (!$ListContentEndTime)
+                {
+                    Log "Must specify ListContentEndTime with ListContentStartTime" Red
+                    exit
+                }
+                $startDate = [DateTime]::Parse($ListContentStartTime.ToString())
+                $endDate = [DateTime]::Parse($ListContentEndTime.ToString())
+                $startDateStr = $startDate.ToString("yyyy-MM-ddTHH:mm:ss")
+                $endDateStr = [String]::Format("{0:yyyy-MM-ddTHH:mm:ss}", $endDate)
+                $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$listContentType&PublisherIdentifier=$PublisherId&startTime=$startDateStr&endTime=$endDateStr"
+                Log "Listing content date range: Start = $startDate   End = $endDate" Green
+            }
+            else
+            {
+                # Retrieve the data for the current 24 hour period
+                LogVerbose "Listing content from last 24 hours"
+                $script:nextPageUri = "$rootUri/subscriptions/content?contentType=$listContentType&PublisherIdentifier=$PublisherId"
+            }
         }
 
         # Retrieve the content links
         while ( ![String]::IsNullOrEmpty($script:nextPageUri) )
         {
+            $sanityCheck = $script:nextPageUri
             $content = GetRest $script:nextPageUri
+                
             if ($content -ne $null)
-                {
+            {
                 if (!$RetrieveContent)
                 {
                     $content
@@ -844,6 +870,16 @@ function ListContent($listContentType)
                             }
                         }
                     }
+                }
+                $content = $null
+            }
+            else
+            {
+                # Failed to retrieve any content
+                if ($sanityCheck -eq $script:nextPageUri)
+                {
+                    $script:nextPageUri = $null
+                    Log "Unexpected failure in nextPageUri processing" Red
                 }
             }
         }
@@ -873,59 +909,59 @@ else
 # Define the download function in a script block, as it is run as a job (which also means that it can't access any variables from the main session)
 
 $downloadFunction = {
-function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePath)
-{
-    # Download the specified content blob and save to file
-    $auditData = ""
-    $auditResponse = Invoke-WebRequest -Uri $contentUrl -Headers @{"Authorization" = $auth} -Method Get
-    $auditData = $auditResponse.Content
-
-    if ($auditData.Length -gt 0)
+    function DownloadContentBlob([string]$contentUrl, [string]$auth, [string]$savePath)
     {
-        if (![String]::IsNullOrEmpty($savePath))
+        # Download the specified content blob and save to file
+        $auditData = ""
+        $auditResponse = Invoke-WebRequest -Uri $contentUrl -Headers @{"Authorization" = $auth} -Method Get
+        $auditData = $auditResponse.Content
+
+        if ($auditData.Length -gt 0)
         {
-            # Save this data
+            if (![String]::IsNullOrEmpty($savePath))
+            {
+                # Save this data
 
-            # ContentUri will be of format https://manage.office.com/api/v1.0/fc69f6a8-90cd-4047-977d-0c768925b8ec/activity/feed/audit/20190205113446710142142$20190205134333251104202$audit_exchange$Audit_Exchange
-            # We use the last part as the filename
-            $outputFileName = $contentUrl.Substring($contentUrl.LastIndexOf("/")+1)
-            [string]$outputFile = $savePath
-            if (![String]::IsNullOrEmpty($outputFile) -and !$outputFile.EndsWith("\")) { $outputFile = "$outputFile\" }
-            $outputFile = "$outputFile$outputFileName"
+                # ContentUri will be of format https://manage.office.com/api/v1.0/fc69f6a8-90cd-4047-977d-0c768925b8ec/activity/feed/audit/20190205113446710142142$20190205134333251104202$audit_exchange$Audit_Exchange
+                # We use the last part as the filename
+                $outputFileName = $contentUrl.Substring($contentUrl.LastIndexOf("/")+1)
+                [string]$outputFile = $savePath
+                if (![String]::IsNullOrEmpty($outputFile) -and !$outputFile.EndsWith("\")) { $outputFile = "$outputFile\" }
+                $outputFile = "$outputFile$outputFileName"
             
-            if ($(Test-Path "$outputFile.txt"))
-            {
-                # Output file already exists
+                if ($(Test-Path "$outputFile.txt"))
+                {
+                    # Output file already exists
 
-                # We perform a sanity check here to ensure that the blob we have already retrieved is the same data
-                $existingBlob = [IO.File]::ReadAllText("$outputFile.txt")
-                if (!$existingBlob.Equals($($auditData | out-string)))
-                {
-                    # This data is different - which is unexpected, so we'll save it as an additional file
-                    Write-Host "Content blob is different to the one already retrieved, but should be the same: $outputFile.txt" -ForegroundColor Red
-                    $i = 1
-                    while ($(Test-Path "$outputFile.$i.txt"))
-                        { $i++ }
-                    $outputFile = "$outputFile.$i"
+                    # We perform a sanity check here to ensure that the blob we have already retrieved is the same data
+                    $existingBlob = [IO.File]::ReadAllText("$outputFile.txt")
+                    if (!$existingBlob.Equals($($auditData | out-string)))
+                    {
+                        # This data is different - which is unexpected, so we'll save it as an additional file
+                        Write-Host "Content blob is different to the one already retrieved, but should be the same: $outputFile.txt" -ForegroundColor Red
+                        $i = 1
+                        while ($(Test-Path "$outputFile.$i.txt"))
+                            { $i++ }
+                        $outputFile = "$outputFile.$i"
+                    }
+                    else
+                    {
+                        Write-Host "Data already retrieved: $outputFile.txt"
+                        $outputFile = ""
+                    }
                 }
-                else
+                if (![String]::IsNullOrEmpty($outputFile))
                 {
-                    Write-Host "Data already retrieved: $outputFile.txt"
-                    $outputFile = ""
+                    Write-Host "Saving data blob to: $outputFile.txt"
+                    $auditData | Out-File -Filepath "$outputFile.txt" -NoClobber
                 }
-            }
-            if (![String]::IsNullOrEmpty($outputFile))
-            {
-                Write-Host "Saving data blob to: $outputFile.txt"
-                $auditData | Out-File -Filepath "$outputFile.txt" -NoClobber
             }
         }
+        else
+        {
+            Write-Host "No data returned from $contentUrl" -ForegroundColor Red
+        }
     }
-    else
-    {
-        Write-Host "No data returned from $contentUrl"
-    }
-}
 }
 
 if ($RetrieveContent -and $contentUrls.Length -gt 0)
@@ -950,7 +986,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
         $auth = "Bearer $(GetValidAccessToken)"
         LogVerbose "Downloading content blob: $contentUrl"
         $downloadJob = Start-Job -Scriptblock { param($url, $auth, $savePath) DownloadContentBlob $url $auth $savePath } -ArgumentList ($contentUrl, $auth, $SaveContentPath) -InitializationScript $downloadFunction
-        $activeJobs.Add($downloadJob)
+        $activeJobs.Add($downloadJob) | out-null
         while ($activeJobs.Count -ge $MaxRetrieveContentJobs)
         {
             # We have enough jobs running, so we need to wait until at least one has completed
@@ -960,7 +996,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
                 if ($activeJobs[$i].State -ne "Running")
                 {
                     Receive-Job $activeJobs[$i]
-                    LogVerbose "Completed job state: $($activeJobs[$i].State)"
+                    LogVerbose "Final job state: $($activeJobs[$i].State)"
                     $activeJobs.RemoveAt($i)
                 }
             }
@@ -984,6 +1020,7 @@ if ($RetrieveContent -and $contentUrls.Length -gt 0)
             $activeJobs[$i] | Wait-Job | out-null
         }
         Receive-Job $activeJobs[$i]
+        LogVerbose "Final job state: $($activeJobs[$i].State)"
         $script:contentRetrieved++
         $percentComplete = ($script:contentRetrieved/$totalContentCount)*100
         Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
