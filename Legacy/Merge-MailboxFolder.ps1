@@ -167,7 +167,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.5"
+$script:ScriptVersion = "1.2.6"
 
 
 # Define our functions
@@ -354,6 +354,7 @@ function GetTokenWithCertificate
     $authResult = $acquire.ExecuteAsync().Result
     $script:oauthToken = $authResult
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $script:Impersonate = $true
 }
 
 function GetTokenViaCode
@@ -411,6 +412,7 @@ function GetTokenWithKey
         Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
         exit # Failed to obtain a token
     }
+    $script:Impersonate = $true
 }
 
 function GetOAuthCredentials
@@ -1230,6 +1232,7 @@ Function IsFolderExcluded()
     if ($ExcludeFolderList)
     {
         LogVerbose "Checking for exclusions: $($ExcludeFolderList -join ',')"
+        $rootFolderName = $script:sourceMailboxRoot.DisplayName.ToLower()
         ForEach ($excludedFolder in $ExcludeFolderList)
         {
             LogDebug "[IsFolderExcluded]Comparing $($folderPath.ToLower()) to $($excludedFolder.ToLower())"
@@ -1240,7 +1243,7 @@ Function IsFolderExcluded()
                 if ($folderPath.Length -gt $excludedFolder.Length)
                 {
                     $pathPrefix = $folderPath.SubString(0, $folderPath.Length-$excludedFolder.Length).ToLower()
-                    if ( ($pathPrefix -ne "\top of information store") -and ($pathPrefix -ne "\top of information store\"))  { $pathsMatch = $false }
+                    if ( ($pathPrefix -ne "\$rootFolderName") -and ($pathPrefix -ne "\$rootFolderName\"))  { $pathsMatch = $false }
                 }
                 if ($pathsMatch)
                 {
@@ -1564,7 +1567,8 @@ Function GetFolder()
     param (
         $RootFolder,
         [string]$FolderPath,
-        [bool]$Create
+        [bool]$Create,
+        [string]$Mailbox
     )	
 	
     if ( $RootFolder -eq $null )
@@ -1728,7 +1732,7 @@ function ConvertId($entryId)
     return $ewsId.UniqueId
 }
 
-function CreateService($smtpAddress)
+function CreateService($smtpAddress, $impersonatedAddress = "")
 {
     # Creates and returns an ExchangeService object to be used to access mailboxes
 
@@ -1805,10 +1809,14 @@ function CreateService($smtpAddress)
     	}
     }
  
+    if ([String]::IsNullOrEmpty($impersonatedAddress))
+    {
+        $impersonatedAddress = $smtpAddress
+    }
     $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
     if ($Impersonate)
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
+		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
 	}
 
     # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
@@ -1881,9 +1889,9 @@ function ProcessMailbox()
             $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $sourceMbx )
         }
     }
-    $sourceMailboxRoot = ThrottledFolderBind $folderId $null $script:sourceService
+    $script:sourceMailboxRoot = ThrottledFolderBind $folderId $null $script:sourceService
 
-    if ( $sourceMailboxRoot -eq $null )
+    if ( $script:sourceMailboxRoot -eq $null )
     {
         Write-Host "Failed to open source message store ($SourceMailbox)" -ForegroundColor Red
         if ($Impersonate)
@@ -1900,7 +1908,8 @@ function ProcessMailbox()
     }
     if ($TargetMailbox -ne $SourceMailbox)
     {
-        $script:targetService = CreateService($TargetMailbox)
+        # We impersonate the source mailbox when accessing the target mailbox
+        $script:targetService = CreateService $TargetMailbox $SourceMailbox
     }
     else
     {
@@ -1935,8 +1944,8 @@ function ProcessMailbox()
         }
     }
 
-    $targetMailboxRoot = ThrottledFolderBind $folderId $null $script:targetService
-    if ( $targetMailboxRoot -eq $null )
+    $script:targetMailboxRoot = ThrottledFolderBind $folderId $null $script:targetService
+    if ( $script:targetMailboxRoot -eq $null )
     {
         Write-Host "Failed to open target message store ($TargetMailbox)" -ForegroundColor Red
         return
@@ -1946,7 +1955,7 @@ function ProcessMailbox()
     {
         # No folder list, this is a request to move the entire mailbox
 
-        MoveItems $sourceMailboxRoot $targetMailboxRoot
+        MoveItems $script:sourceMailboxRoot $script:targetMailboxRoot
         return
     }
 
@@ -1973,7 +1982,7 @@ function ProcessMailbox()
             $TargetFolderObject = $null
             if ($ByFolderId)
             {
-                $id = New-Object Microsoft.Exchange.WebServices.Data.FolderId($PrimaryFolder)
+                $id = New-Object Microsoft.Exchange.WebServices.Data.FolderId($PrimaryFolder, $TargetMailbox)
                 $TargetFolderObject = ThrottledFolderBind $id
             }
             elseif ($ByEntryId)
@@ -1984,7 +1993,7 @@ function ProcessMailbox()
             }
             else
             {
-	            $TargetFolderObject = GetFolder $targetMailboxRoot $PrimaryFolder $CreateTargetFolder
+	            $TargetFolderObject = GetFolder $script:targetMailboxRoot $PrimaryFolder $CreateTargetFolder $TargetMailbox
             }
         }
 
@@ -2024,7 +2033,7 @@ function ProcessMailbox()
                     }
                     else
                     {
-	                    $SourceFolderObject = GetFolder $sourceMailboxRoot $SecondaryFolder
+	                    $SourceFolderObject = GetFolder $script:sourceMailboxRoot $SecondaryFolder $false $SourceMailbox
                     }
 	                if ($SourceFolderObject)
 	                {
