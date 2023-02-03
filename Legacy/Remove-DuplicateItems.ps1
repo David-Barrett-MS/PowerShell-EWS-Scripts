@@ -1,7 +1,7 @@
 ﻿#
 # Remove-DuplicateItems.ps1
 #
-# By David Barrett, Microsoft Ltd. 2017-2018. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2017-2023. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -13,84 +13,90 @@
 # THE SOFTWARE.
 
 param (
-	[Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
-	[ValidateNotNullOrEmpty()]
-	[string]$Mailbox,
+    [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox will be accessed (instead of the main mailbox)")]
-	[switch]$Archive,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the archive mailbox will be accessed (instead of the main mailbox)")]
+    [switch]$Archive,
 		
-	[Parameter(Mandatory=$False,HelpMessage="Folder to search - if omitted, the mailbox message root folder is assumed")]
-	[string]$FolderPath,
+    [Parameter(Mandatory=$False,HelpMessage="Folder to search - if omitted, the mailbox message root folder is assumed")]
+    [string]$FolderPath,
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to which any duplicates will be moved.  If not specified, duplicate items are soft deleted (will go to Deleted Items folder).")]
-	[string]$DuplicatesTargetFolder,
+    [Parameter(Mandatory=$False,HelpMessage="Folder to which any duplicates will be moved.  If not specified, duplicate items are soft deleted (will go to Deleted Items folder).")]
+    [string]$DuplicatesTargetFolder,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, any subfolders will be processed also")]
-	[switch]$RecurseFolders,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, any subfolders will be processed also")]
+    [switch]$RecurseFolders,
 
-	[Parameter(Mandatory=$False,HelpMessage="When specified, duplicates will be matched anywhere within the mailbox (instead of just within the current folder)")]
-	[switch]$MatchEntireMailbox,
+    [Parameter(Mandatory=$False,HelpMessage="When specified, duplicates will be matched anywhere within the mailbox (instead of just within the current folder)")]
+    [switch]$MatchEntireMailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="If this switch is present, folder path is required and the path points to a public folder")]
-	[switch]$PublicFolders,
+    [Parameter(Mandatory=$False,HelpMessage="If this switch is present, folder path is required and the path points to a public folder")]
+    [switch]$PublicFolders,
 
-	[Parameter(Mandatory=$False,HelpMessage="Means that the items will be hard deleted (normally they are only soft deleted)")]
-	[switch]$HardDelete,
+    [Parameter(Mandatory=$False,HelpMessage="When speciifed, duplicate items will be hard deleted (normally they are only soft deleted)")]
+    [switch]$HardDelete,
 
-	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available.")]
-	[switch]$OAuth,
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts).")]
+    [switch]$OAuth,
 
-	[Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-	[string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 
-	[Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
-	[string]$OAuthTenantId = "",
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
+    [string]$OAuthTenantId = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-	[string]$OAuthRedirectUri = "http://localhost/code",
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
+    [string]$OAuthRedirectUri = "http://localhost/code",
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    [string]$OAuthSecretKey = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Please note that certificate auth requires the MSAL dll to be available.")]
+    $OAuthCertificate = $null,
 				
-	[Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
-	[switch]$Impersonate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
+    [switch]$Impersonate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
-	[string]$EwsUrl,
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
+    [string]$EwsUrl,
 	
-	[Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl).")]
-	[switch]$Office365,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl).")]
+    [switch]$Office365,
 
-	[Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
-	[string]$EWSManagedApiPath = "",
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
+    [string]$EWSManagedApiPath = "",
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
-	[switch]$IgnoreSSLCertificate,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
+    [switch]$IgnoreSSLCertificate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
-	[switch]$AllowInsecureRedirection,
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
+    [switch]$AllowInsecureRedirection,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
+    [string]$LogFile = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
-	[switch]$VerboseLogFile,
+    [Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
+    [switch]$VerboseLogFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
-	[switch]$DebugLogFile,
+    [Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
+    [switch]$DebugLogFile,
 
-	[Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
-	[switch]$FastFileLogging,
+    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
+    [switch]$FastFileLogging,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Do not apply any changes, just report what would be updated")]	
-	[switch]$WhatIf,
+    [Parameter(Mandatory=$False,HelpMessage="Do not apply any changes, just report what would be updated")]	
+    [switch]$WhatIf,
 
-	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
-	[string]$TraceFile
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
+    [string]$TraceFile
 )
-$script:ScriptVersion = "1.1.1"
+$script:ScriptVersion = "1.1.2"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -253,26 +259,90 @@ function LoadLibraries()
     return $true
 }
 
-function LoadADAL
+function GetTokenWithCertificate
 {
-    # First of all, we check if ADAL is already available
-    # To do this, we simply try to instantiate an authentication context to the common log-on Url.  If we get an object back, we have ADAL
+    # We use MSAL with certificate auth
+    if (!script:msalApiLoaded)
+    {
+        $msalLocation = @()
+        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
+        if (!$script:msalApiLoaded)
+        {
+            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
+            exit
+        }
+    }   
 
-    LogDebug "Checking for ADAL"
-    $authenticationContextCommon = $null
+    $cca1 = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca2 = $cca1.WithCertificate($OAuthCertificate)
+    $cca3 = $cca2.WithTenantId($OAuthTenantId)
+    $cca = $cca3.Build()
+
+    $scopes = New-Object System.Collections.Generic.List[string]
+    $scopes.Add("https://outlook.office365.com/.default")
+    $acquire = $cca.AcquireTokenForClient($scopes)
+    $authResult = $acquire.ExecuteAsync().Result
+    $script:oauthToken = $authResult
+    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $script:Impersonate = $true
+}
+
+function GetTokenViaCode
+{
+    # Acquire auth code (needed to request token)
+    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+    Start-Process $authUrl
+
+    $authcode = Read-Host "Auth code"
+    $codeStart = $authcode.IndexOf("?code=")
+    if ($codeStart -gt 0)
+    {
+        $authcode = $authcode.Substring($codeStart+6)
+    }
+    $codeEnd = $authcode.IndexOf("&session_state=")
+    if ($codeEnd -gt 0)
+    {
+        $authcode = $authcode.Substring(0, $codeEnd)
+    }
+    Write-Verbose "Using auth code: $authcode"
+
+    # Acquire token (using the auth code)
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
     try
     {
-        $authenticationContextCommon = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    } catch {}
-    if ($authenticationContextCommon -ne $null)
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
     {
-        LogVerbose "ADAL already available, no need to load dlls."
-        return $true
+        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function GetTokenWithKey
+{
+    $Body = @{
+      "grant_type"    = "client_credentials";
+      "client_id"     = "$OAuthClientId";
+      "client_secret" = "$OAuthSecretKey";
+      "scope"         = "https://outlook.office365.com/.default"
     }
 
-    # Load the ADAL libraries
-    $adalDllsLocation = @()
-    return $(LoadLibraries $false @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll") ([ref]$adalDllsLocation) )
+    try
+    {
+        $script:oAuthToken = Invoke-RestMethod -Method POST -uri "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token" -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        $script:Impersonate = $true
+    }
+    catch
+    {
+        Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
 }
 
 function GetOAuthCredentials
@@ -283,45 +353,35 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ( $(LoadADAL) -eq $false )
+    if ($script:oauthToken -ne $null)
     {
-        Log "Failed to load ADAL, which is required for OAuth" Red
-        Exit
+        # We already have a token
+        if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
+        {
+            # Token still valid, so return that
+            $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
+            return $exchangeCredentials
+        }
+
+        # Token needs renewing
+
     }
 
-    $script:authenticationResult = $null
-    if ([String]::IsNullOrEmpty($OAuthTenantId))
+    if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
+        GetTokenWithKey
+    }
+    elseif ($OAuthCertificate -ne $null)
+    {
+        GetTokenWithCertificate
     }
     else
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.microsoftonline.com/$OAuthTenantId", $False)
-    }
-    if ($RenewToken)
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Auto)
-    }
-    else
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::SelectAccount)
+        GetTokenViaCode
     }
 
-    $redirectUri = New-Object Uri($OAuthRedirectUri)
-    $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
-
-    if ( !$authenticationResult.IsFaulted )
-    {
-        $script:oAuthToken = $authenticationResult.Result
-        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthToken.AccessToken)
-        $Mailbox = $authenticationResult.Result.UserInfo.UniqueId
-        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId), access token expires $($script:oAuthToken.ExpiresOn)"
-    }
-    else
-    {
-        ReportError "GetOAuthCredentials"
-    }
-
+    # If we get here we have a valid token
+    $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
     return $exchangeCredentials
 }
 
@@ -329,29 +389,29 @@ function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
-    if ( $script:authenticationResult -eq $null ) { return }
+    if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
     if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
-    LogVerbose("OAuth access token invalid, attempting to renew")
+    LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
     { 
-        Log "OAuth Token renewal failed"
+        Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
         exit # We no longer have access to the mailbox, so we stop here
     }
 
-    LogVerbose "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
-            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:authenticationResult.Result.AccessToken)
+            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
         }
-        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
 }
 
@@ -1061,9 +1121,161 @@ Function RemoveProcessedItemsFromList()
     }
 }
 
-Function ThrottledBatchDelete()
+Function ThrottledBatchMove()
 {
     # Send request to move/copy items, allowing for throttling (which in this case is likely to manifest as time-out errors)
+    param (
+        $ItemsToMove,
+        $TargetFolderId
+    )
+
+    $consecutive401Errors = 0
+
+	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
+	$itemIdType = [Type] $itemId.GetType()
+	$genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
+    
+    $finished = $false
+    $totalItems = $ItemsToMove.Count
+    Write-Progress -Activity "Moving items" -Status "0% complete" -PercentComplete 0
+
+    while ( !$finished )
+    {
+	    $script:moveIds = [Activator]::CreateInstance($genericItemIdList)
+
+        LogVerbose "Current batch size is $($script:currentBatchSize)"
+        
+        for ([int]$i=0; $i -lt $script:currentBatchSize; $i++)
+        {
+            if ($ItemsToMove[$i] -ne $null)
+            {
+                if ($moveIds.Contains($ItemsToMove[$i]))
+                {
+                    LogVerbose "Item already in batch: $ItemsToMove[$i]"
+                    $ItemsToMove.Remove($ItemsToMove[$i])
+                    if ($i -gt 0) { $i-- }
+                }
+                else
+                {
+                    $moveIds.Add($ItemsToMove[$i])
+                    LogVerbose "Added to batch: $($ItemsToMove[$i])"
+                }
+            }
+            else
+            {
+                LogVerbose "Ignored null source item (index $i)"
+            }
+            if ($i -ge $ItemsToMove.Count)
+                { break }
+        }
+
+        $results = $null
+        try
+        {
+            LogVerbose "Sending batch request to move $($moveIds.Count) items ($($ItemsToMove.Count) remaining)"
+			$results = $script:service.MoveItems( $moveIds, $TargetFolderId, $false)
+            LogVerbose "Batch request completed"
+        }
+        catch
+        {
+            if ( Throttled )
+            {
+                # We've been throttled, which should now have expired (the Throttled function waits as necessary), so can now retry
+            }
+            else
+            {                
+                if ($Error[0].Exception)
+                {
+                    if ($Error[0].Exception.Message.Contains("(401) Unauthorized."))
+                    {
+                        # This is most likely an issue with the OAuth token.
+                        $consecutive401Errors++
+                        if ( ($consecutive401Errors -lt 2) -and $OAuth)
+                        {
+                            Log "Access denied response - checking OAuth token"
+                            ApplyEWSOauthCredentials
+                        }
+                        else
+                        {
+                            Log "Consecutive access denied errors encountered - stopping processing" Red
+                            Exit
+                        }
+                    }
+                    elseif ($Error[0].Exception.InnerException.ToString().Contains("The operation has timed out"))
+                    {
+                        # We've probably been throttled, so we'll reduce the batch size and try again
+                        if ($script:currentBatchSize -gt 50)
+                        {
+                            LogVerbose "Timeout error received"
+                            DecreaseBatchSize
+                        }
+                        else
+                        {
+                            $finished = $true
+                        }
+                    }
+                    else
+                    {
+                        LogVerbose "ERROR ON MOVE: $($Error[0].Exception.Message)"
+                    }
+                }
+                else
+                {
+                    $finished = $true # Unknown error, so we finish processing as we don't know the best way to handle it
+                    $lastResponse = [String]::Empty
+                    try
+                    {
+                        if ($script:Tracer)
+                        {
+                            $lastResponse = $script:Tracer.LastResponse.Replace("<?xml version=`"1.0`" encoding=`"utf-8`"?>", "")
+                        }
+                    } catch {}
+                    if (![String]::IsNullOrEmpty($lastResponse))
+                    {
+                        $lastResponse = "<?xml version=`"1.0`" encoding=`"utf-8`"?>$lastResponse"
+                        $responseXml = [xml]$lastResponse
+	                    if ($responseXml.Trace.Envelope.Body.Fault.detail.ResponseCode.Value -eq "ErrorNoRespondingCASInDestinationSite")
+                        {
+                            # We get this error if the destination CAS (request was proxied) hasn't returned any data within the timeout (usually 60 seconds)
+                            # Reducing the batch size should help here, and we want to reduce it quite aggressively
+                            if ($script:currentBatchSize -gt 50)
+                            {
+                                LogVerbose "ErrorNoRespondingCASInDestinationSite error received"
+                                DecreaseBatchSize 0.7
+                                $finished = $false
+                            }
+                        }
+                        else
+                        {
+                            ReportError "ThrottledBatchMove"
+                        }
+                    }
+                    else
+                    {
+                        ReportError "ThrottledBatchMove"
+                    }
+                }
+            }
+        }
+        ApplyEWSOauthCredentials
+
+        RemoveProcessedItemsFromList $moveIds $results $false $ItemsToMove
+
+        $percentComplete = ( ($totalItems - $ItemsToMove.Count) / $totalItems ) * 100
+        Write-Progress -Activity "Moving items" -Status "$percentComplete% complete" -PercentComplete $percentComplete
+
+        if ($ItemsToMove.Count -eq 0)
+        {
+            $finished = $True
+            Write-Progress -Activity "Moving items" -Status "100% complete" -Completed
+        }
+    }
+}
+
+
+Function ThrottledBatchDelete()
+{
+    # Send request to delete items, allowing for throttling (which in this case is likely to manifest as time-out errors)
     param (
         $ItemsToDelete,
         $BatchSize = 500,
@@ -1159,30 +1371,28 @@ Function ThrottledBatchDelete()
     Write-Progress -Activity $progressActivity -Status "Complete" -Completed
 }
 
+Function ProcessWhatIf($processType)
+{
+	ForEach ($dupe in $script:duplicateItems)
+	{
+        if ([String]::IsNullOrEmpty($dupe.Subject))
+        {
+            Log "Would $($processType): [No Subject]" Gray
+        }
+        else
+        {
+            Log "Would $($processType): $($dupe.Subject)" Gray
+        }
+    }
+}
+
 Function BatchDeleteDuplicates()
 {
-    # We now have a list of duplicate items, so we can process them
+    # Delete all identified duplicates
 
-    Log "$($script:duplicateItems.Count) duplicate items have been found" Green
     if ( $WhatIf )
     {
-	    ForEach ($dupe in $script:duplicateItems)
-	    {
-            if ([String]::IsNullOrEmpty($dupe.Subject))
-            {
-                Log "Would delete: [No Subject]" Gray
-            }
-            else
-            {
-                Log ([string]::Format("Would delete: {0}", $dupe.Subject)) Gray
-            }
-        }
-        return
-    }
-
-    if ($script:duplicateItems.Count -eq 0)
-    {
-        Log "No duplicate items to delete" Green
+	    ProcessWhatIf("delete")
         return
     }
 
@@ -1207,6 +1417,39 @@ Function BatchDeleteDuplicates()
         Log "$($batchDeleteIds.Count) items were not deleted" Yellow
     }
 }
+
+Function BatchMoveDuplicates()
+{
+    # Move all the duplicates to the specified folder
+
+    if ( $WhatIf )
+    {
+	    ProcessWhatIf("move")
+        return
+    }
+
+    Log "Moving $($script:duplicateItems.Count) items"
+	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
+	$itemIdType = [Type] $itemId.GetType()
+	$genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
+    $batchMoveIds = [Activator]::CreateInstance($genericItemIdList)
+
+    foreach ($item in $script:duplicateItems)
+    {
+        $batchMoveIds.Add($item.Id)
+    }
+    ThrottledBatchMove $batchMoveIds $script:moveToFolder.Id
+
+    if ($batchMoveIds.Count -eq 0)
+    {
+        Log "All items successfully moved" Green
+    }
+    else
+    {
+        Log "$($batchMoveIds.Count) items were not deleted" Yellow
+    }
+}
+
 
 Function DecreaseBatchSize()
 {
@@ -1481,7 +1724,28 @@ function ProcessMailbox()
 
     $script:duplicateItems = @()
 	SearchForDuplicates $Folder
-    BatchDeleteDuplicates
+    Log "$($script:duplicateItems.Count) duplicate items have been found" Green
+
+    if ($script:duplicateItems.Count -gt 0)
+    {
+        if ($DuplicatesTargetFolder)
+        {
+            # We have a target folder specified, so we move all the duplicate items into that
+            $script:moveToFolder = GetFolder $rootFolder $DuplicatesTargetFolder
+            if ($script:moveToFolder -ne $null)
+            {
+                BatchMoveDuplicates
+            }
+            else
+            {
+                Log "Failed to find target folder for duplicates: $DuplicatesTargetFolder" Red
+            }
+        }
+        else
+        {
+            BatchDeleteDuplicates
+        }
+    }
 }
 
 
@@ -1523,6 +1787,8 @@ $script:requiredFolderProperties = New-Object Microsoft.Exchange.WebServices.Dat
 
 
 Write-Host ""
+
+$script:currentBatchSize = 100
 
 # Check whether we have a CSV file as input...
 $FileExists = Test-Path $Mailbox
