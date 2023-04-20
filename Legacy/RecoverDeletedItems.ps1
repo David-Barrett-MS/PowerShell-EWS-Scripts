@@ -1,7 +1,7 @@
 #
 # RecoverDeletedItems.ps1
 #
-# By David Barrett, Microsoft Ltd. 2015-2020. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2015-2023. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
@@ -112,7 +112,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.1.8"
+$script:ScriptVersion = "1.1.9"
 
 # Define our functions
 
@@ -1011,7 +1011,7 @@ function ReadMailboxFolderHierarchy()
 
     $folderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(1000)
     $folderView.Traversal = [Microsoft.Exchange.WebServices.Data.FolderTraversal]::Deep
-    $folderView.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, $PR_SOURCE_KEY)
+    $folderView.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, $PR_SOURCE_KEY, [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName)
     $moreFolders = $true
     $folderView.Offset = 0
 
@@ -1021,7 +1021,18 @@ function ReadMailboxFolderHierarchy()
     while ($moreFolders)
     {
         ApplyEWSOAuthCredentials
-        $findResults = $script:service.FindFolders([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $folderView)
+        if ($Archive)
+        {
+            $findResults = $script:service.FindFolders([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveMsgFolderRoot, $folderView)
+        }
+        elseif ($ArchiveRoot)
+        {
+            $findResults = $script:service.FindFolders([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveRoot, $folderView)
+        }
+        else
+        {
+            $findResults = $script:service.FindFolders([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $folderView)
+        }
         $folderView.Offset += 1000
         $moreFolders = $findResults.MoreAvailable
 
@@ -1035,7 +1046,7 @@ function ReadMailboxFolderHierarchy()
             }
             if ($folderSourceKey -ne $null)
             {
-                LogVerbose "$($folderSourceKey): $($folder.Id)"
+                LogVerbose "$($folder.DisplayName) = $($folderSourceKey): $($folder.Id)"
                 $script:FoldersBySourceKey.Add($folderSourceKey, $folder.Id)
             }
         }
@@ -1171,6 +1182,7 @@ Function RecoverFromFolder()
                     if ( [String]::IsNullOrEmpty($moveToFolder) )
                     {
                         # Check to see if we have $LastActiveParentEntryID, as this will allow us to restore to the original folder (if it still exists)
+                        $lastIdFound = $false
                         foreach ($extendedProperty in $Item.ExtendedProperties)
                         {
 
@@ -1178,19 +1190,24 @@ Function RecoverFromFolder()
                             {
                                 # We have last active folder, so let's see if the Id is still valid
                                 $propValue = [System.BitConverter]::ToString($extendedProperty.Value)
-                                LogVerbose "LastActiveParentID: $propValue"
+                                LogVerbose "LastActiveParentEntryID: $propValue"
+                                $lastIdFound = $true
 
                                 # Last active folder Id is the PidTagSourceKey value of the folder
                                 if ($script:FoldersBySourceKey.Contains($propValue))
                                 {
                                     $moveToFolder = $script:FoldersBySourceKey[$propValue]
                                     $targetFolder = new-object Microsoft.Exchange.WebServices.Data.FolderId($moveToFolder)
-                                    LogVerbose "lastActiveFolderId: $moveToFolder"
+                                    LogVerbose "LastActiveParentEntryID: $moveToFolder"
                                     break
+                                }
+                                else
+                                {
+                                    Log "LastActiveParentEntryID was not found in this mailbox" Red
                                 }
                             }
                         }
-                        if ( [String]::IsNullOrEmpty($moveToFolder) )
+                        if ( !$lastIdFound )
                         {
                             LogVerbose "No LastActiveParentEntryID property found on item"
                         }
@@ -1312,7 +1329,7 @@ Function RecoverFromFolder()
 function ProcessMailbox()
 {
     # Process the mailbox
-    Write-Host ([string]::Format("Processing mailbox {0}", $Mailbox)) -ForegroundColor Gray
+    Write-Host "Processing $(if ($Archive -or $ArchiveRoot) { "archive "})mailbox $Mailbox" -ForegroundColor Gray
 	$script:service = CreateService($Mailbox)
 	if ($script:service -eq $Null)
 	{
@@ -1322,25 +1339,17 @@ function ProcessMailbox()
 	
 	$mbx = New-Object Microsoft.Exchange.WebServices.Data.Mailbox( $Mailbox )
     $rootFolderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $mbx )
-
-    if ($Archive -or $ArchiveRoot)
+    if ($Archive)
     {
-        if ([String]::IsNullOrEmpty($RestoreToFolder))
-        {
-            Log "When restoring from archive, -RestoreToFolder must be specified" Red
-            return
-        }
-        if ($Archive)
-        {
-            $rootFolderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveMsgFolderRoot, $mbx )
-        }
-        elseif ($ArchiveRoot)
-        {
-            $rootFolderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveRoot, $mbx )
-        }
+        $rootFolderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveMsgFolderRoot, $mbx )
     }
-    $rootFolder = ThrottledFolderBind $rootFolderId $null $script:service
+    elseif ($ArchiveRoot)
+    {
+        $rootFolderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveRoot, $mbx )
+    }
 
+    # Bind to root folder (fail if unsuccessful)
+    $rootFolder = ThrottledFolderBind $rootFolderId $null $script:service
     if ($rootFolder -eq $null) { return }
 
     if (![String]::IsNullOrEmpty($RestoreToFolder))
@@ -1437,7 +1446,10 @@ if (!(LoadEWSManagedAPI))
 	Exit
 }
 
-
+if ($Office365)
+{
+    $OAuth = $true
+}
 
   
 
