@@ -17,13 +17,17 @@ param (
     [ValidateNotNullOrEmpty()]
     [string]$Mailbox,
 
-    [Parameter(Position=1,Mandatory=$False,HelpMessage="Start date (if items are older than this, they will be ignored).")]
+    [Parameter(Mandatory=$False,HelpMessage="Start date (if items are older than this, they will be ignored).")]
     [ValidateNotNullOrEmpty()]
     [datetime]$RestoreStart,
 	
-    [Parameter(Position=2,Mandatory=$False,HelpMessage="End date (if items are newer than this, they will be ignored).")]
+    [Parameter(Mandatory=$False,HelpMessage="End date (if items are newer than this, they will be ignored).")]
     [ValidateNotNullOrEmpty()]
     [datetime]$RestoreEnd,
+
+    [Parameter(Mandatory=$False,HelpMessage="Policy tag of items to restore (only items with this tag will be restored).")]
+    [ValidateNotNullOrEmpty()]
+    [string]$RestorePolicyTag,
 
     [Parameter(Mandatory=$False,HelpMessage="Folder to restore from (if not specified, items are recovered from retention).  Use WellKnownFolderNames.DeletedItems to restore from Deleted Items folder.")]	
     [string]$RestoreFromFolder,
@@ -112,7 +116,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.1.9"
+$script:ScriptVersion = "1.2.0"
 
 # Define our functions
 
@@ -798,7 +802,7 @@ function ThrottledFolderBind()
         }
         if (!($folder -eq $null))
         {
-            LogVerbose "Successfully bound to folder $folderId"
+            LogVerbose "Successfully bound to folder $($folder.DisplayName)"
         }
         Start-Sleep -Milliseconds $script:currentThrottlingDelay
         return $folder
@@ -820,7 +824,7 @@ function ThrottledFolderBind()
             }
             if (!($folder -eq $null))
             {
-                LogVerbose "Successfully bound to folder $folderId"
+                LogVerbose "Successfully bound to folder $($folder.DisplayName)"
             }
             return $folder
         }
@@ -850,21 +854,26 @@ function GetFolderPath($Folder)
     if (!$Folder.Id)
     {
         # This isn't a folder.  Assume it's an Id and try binding to the folder
+        LogVerbose "Retrieving path for folder ID : $Folder"
+
         if ($script:folderPathCache.ContainsKey($Folder))
         {
             return $script:folderPathCache[$Folder]
         }
         $Folder = ThrottledFolderBind $Folder $propset $script:service
+        $parentFolder = $Folder
     }
     else
     {
+        LogVerbose "Retrieving path for folder: $($Folder.DisplayName)"
         if ($script:folderPathCache.ContainsKey($Folder.Id.UniqueId))
         {
             return $script:folderPathCache[$Folder.Id.UniqueId]
         }
+        $parentFolder = ThrottledFolderBind $Folder.Id $propset $Folder.Service
     }
 
-    $parentFolder = ThrottledFolderBind $Folder.Id $propset $Folder.Service
+    
     $folderPath = $Folder.DisplayName
     $parentFolderId = $Folder.Id
     while ($parentFolder.ParentFolderId -ne $parentFolderId)
@@ -1071,7 +1080,7 @@ function ConvertEntryId($entryId)
 
 Function RecoverFromFolder()
 {
-	# Process all the items in the given folder and move them back to mailbox
+	# Process all the items in the given folder and move them back to previous location
 	
 	if ($args -eq $null)
 	{
@@ -1080,24 +1089,42 @@ Function RecoverFromFolder()
 	$Folder=$args[0]
 
     ReadMailboxFolderHierarchy
+	
+    $LastActiveParentID = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x348A,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
+    $PidLidSpamOriginalFolder = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition([Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::Common,0x859C,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
+    $PidTagPolicyTag = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3019,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
+    #$LastActiveParentID = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x65E0,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
+
     if ($RestoreStart -or $RestoreEnd)
     {
         LogVerbose "RestoreStart: $RestoreStart"
         LogVerbose "RestoreEnd: $RestoreEnd"
     }
-	
-	# Set parameters - we will process in batches of 500 for the FindItems call
+
+    if (-not [String]::IsNullOrEmpty($RestorePolicyTag))
+    {
+        $restorePolicyTagGuid = $null
+        try
+        {
+            $restorePolicyTagGuid = [guid]::Parse($RestorePolicyTag)
+        }
+        catch
+        {
+            Log "RestorePolicyTag is not a valid Guid" Red
+            exit
+        }
+        LogVerbose "RestorePolicyTag: $RestorePolicyTag"
+    }
+
 	$MoreItems=$true
     $skipped = 0
-    $LastActiveParentID = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x348A,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
-    $PidLidSpamOriginalFolder = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition([Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::Common,0x859C,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
-    #$LastActiveParentID = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x65E0,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
 	
 	while ($MoreItems)
 	{
 		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView(500, $skipped, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
 		$View.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,
-                                   [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsFromMe, [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender, [Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime, $PidLidSpamOriginalFolder, $LastActiveParentID)
+                                   [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsFromMe, [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender, [Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime, $PidLidSpamOriginalFolder, $LastActiveParentID, $PidTagPolicyTag)
+
         if ($Exchange2007)
         {
             $View.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::SoftDeleted
@@ -1115,6 +1142,24 @@ Function RecoverFromFolder()
             LogVerbose "Last modified time: $($Item.LastModifiedTime)"
 
             $itemShouldBeRestored = $True
+            if ($restorePolicyTagGuid)
+            {
+                foreach ($prop in $Item.ExtendedProperties)
+                {
+                    if ($prop.PropertyDefinition -eq $PidTagPolicyTag)
+                    {
+                        $itemPolicyTagGuid = [System.Guid]::new($prop.Value)
+                        LogVerbose "PidTagPolicyTag: $itemPolicyTagGuid vs $($restorePolicyTagGuid.ToString())"
+
+                        if ($itemPolicyTagGuid -ne $restorePolicyTagGuid)
+                        {
+                            LogVerbose "PidTagPolicyTag does not match filter"
+                            $itemShouldBeRestored = $false
+                        }
+                    }
+                }
+            }
+
             if ($RestoreStart)
             {    
                 if ($Item.LastModifiedTime -lt $RestoreStart) { $itemShouldBeRestored = $False; LogVerbose "Item is not within restore time range (start check)" }
@@ -1123,6 +1168,7 @@ Function RecoverFromFolder()
             {
                 if ($Item.LastModifiedTime -gt $RestoreEnd) { $itemShouldBeRestored = $False; LogVerbose "Item is not within restore time range (end check)" }
             }
+
             if ($RestoreMessageClasses -and $itemShouldBeRestored)
             {
                 $validMessageClass = $false
