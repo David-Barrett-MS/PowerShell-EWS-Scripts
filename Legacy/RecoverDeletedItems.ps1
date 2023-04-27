@@ -60,6 +60,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, and the PidLidSpamOriginalFolder property is set on the message, the script will attempt to restore to that folder.")]
     [switch]$UseJunkRestoreFolder,
 
+    [Parameter(Mandatory=$False,HelpMessage="The number of items requested to be moved in a single EWS call.")]
+    [int]$BatchSize = 1,
+
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
@@ -116,7 +119,8 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.0"
+$script:ScriptVersion = "1.2.1"
+$scriptStartTime = [DateTime]::Now
 
 # Define our functions
 
@@ -586,10 +590,10 @@ Function CreateTraceListener($service)
 
 			        ~EWSTracer()
 			        {
-                        Close();
+                        CloseStream();
 			        }
 
-                    public void Close()
+                    public void CloseStream()
 			        {
 				        try
 				        {
@@ -894,6 +898,274 @@ function GetFolderPath($Folder)
     return $folderPath
 }
 
+$script:itemRetryCount = @{}
+Function RemoveProcessedItemsFromList()
+{
+    # Process the results of a batch move/copy and remove any items that were successfully moved from our list of items to move
+    param (
+        $requestedItems,
+        $results,
+        $suppressErrors = $false,
+        $Items
+    )
+
+    if ($results -ne $null)
+    {
+        $failed = 0
+        for ($i = 0; $i -lt $requestedItems.Count; $i++)
+        {
+            if ($results[$i].ErrorCode -eq "NoError")
+            {
+                LogVerbose "Item successfully processed: $($requestedItems[$i])"
+                [void]$Items.Remove($requestedItems[$i])
+            }
+            else
+            {
+                $permanentErrors = @("ErrorMoveCopyFailed", "ErrorInvalidOperation", "ErrorItemNotFound", "ErrorToFolderNotFound")
+                if ( $permanentErrors.Contains($results[$i].ErrorCode.ToString()) )
+                {
+                    # This is a permanent error, so we remove the item from the list
+                    [void]$Items.Remove($requestedItems[$i])
+                    if (!$suppressErrors)
+                    {
+                        if ([String]::IsNullOrEmpty($results[$i].MessageText))
+                        {
+                            Log "Permanent error $($results[$i].ErrorCode) reported for item: $($requestedItems[$i].UniqueId)" Red
+                        }
+                        else
+                        {
+                            Log "Permanent error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item: $($requestedItems[$i].UniqueId)" Red
+                        }
+                    }
+                }
+                else
+                {
+                    # This is most likely a temporary error, so we don't remove the item from the list
+                    $retryCount = 0
+                    if ( $script:itemRetryCount.ContainsKey($requestedItems[$i].UniqueId) )
+                        { $retryCount = $script:itemRetryCount[$requestedItems[$i].UniqueId] }
+                    $retryCount++
+                    if ($retryCount -lt 4)
+                    {
+                        LogVerbose "Error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item (attempt $retryCount): $($requestedItems[$i].UniqueId)"
+                        $script:itemRetryCount[$requestedItems[$i].UniqueId] = $retryCount
+                    }
+                    else
+                    {
+                        # We got an error 3 times in a row, so we'll admit defeat
+                        [void]$Items.Remove($requestedItems[$i])
+                        if (!$suppressErrors)
+                        {
+                            if ([String]::IsNullOrEmpty($results[$i].MessageText))
+                            {
+                                Log "Permanent error $($results[$i].ErrorCode) reported for item: $($requestedItems[$i].UniqueId)" Red
+                            }
+                            else
+                            {
+                                Log "Permanent error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item: $($requestedItems[$i].UniqueId)" Red
+                            }
+                        }
+                    }
+                }
+                $failed++
+            } 
+        }
+    }
+    else
+    {
+        Log "No results returned - assuming all items processed (either successfully or with permanent error)" White
+        for ($i = 0; $i -lt $requestedItems.Count; $i++)
+        {
+            [void]$Items.Remove($requestedItems[$i])
+        }
+
+    }
+    if ( ($failed -gt 0) -and !$suppressErrors )
+    {
+        Log "$failed items reported error during batch request (if throttled, some failures are expected, and will be retried)" Yellow
+    }
+    else
+    {
+        LogVerbose "All batch items processed successfully"
+    }
+}
+
+Function ThrottledBatchMove()
+{
+    # Send request to move/copy items, allowing for throttling (which in this case is likely to manifest as time-out errors)
+    param (
+        $ItemsToMove,
+        $TargetFolderId,
+        $Copy
+    )
+
+    $consecutive401Errors = 0
+    $consecutiveTimeOuts = 0
+    LogVerbose "Batch move to folder $TargetFolderId"
+
+	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
+	$itemIdType = [Type] $itemId.GetType()
+	$genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
+    
+    $finished = $false
+
+    while ( !$finished )
+    {
+	    $script:moveIds = [Activator]::CreateInstance($genericItemIdList)
+        $script:deleteIds = [Activator]::CreateInstance($genericItemIdList) # This is used to check that items were deleted once moved (only happens when moving between public folders)
+
+        for ([int]$i=0; $i -lt $BatchSize; $i++)
+        {
+            if ($ItemsToMove[$i] -ne $null)
+            {
+                if ($moveIds.Contains($ItemsToMove[$i]))
+                {
+                    LogVerbose "Item already in batch: $ItemsToMove[$i]"
+                    $ItemsToMove.Remove($ItemsToMove[$i])
+                    if ($i -gt 0) { $i-- }
+                }
+                else
+                {
+                    $moveIds.Add($ItemsToMove[$i])
+                    if ($WhatIf)
+                    {
+                        Log "Would move/copy $($ItemsToMove[$i])"
+                    }
+                    else
+                    {
+                        LogVerbose "Added to batch: $($ItemsToMove[$i])"
+                    }
+                }
+            }
+            else
+            {
+                LogVerbose "Ignored null source item (index $i)"
+            }
+            if ($i -ge $ItemsToMove.Count)
+                { break }
+        }
+
+        $results = $null
+        try
+        {
+            if (!$WhatIf)
+            {
+                ApplyEWSOauthCredentials
+                if ( $Copy )
+                {
+                    Log "Sending batch request to copy $($moveIds.Count) items" Green
+			        $results = $script:service.CopyItems( $moveIds, $TargetFolderId, $false )
+                }
+                else
+                {
+                    Log "Sending batch request to move $($moveIds.Count) items" Green
+			        $results = $script:service.MoveItems( $moveIds, $TargetFolderId, $false)
+                }
+                LogVerbose "Batch request completed"
+            }
+        }
+        catch
+        {
+            if ( Throttled )
+            {
+                # We've been throttled, so we try again
+            }
+            else
+            {                
+                if ($Error[0].Exception)
+                {
+                    if ($Error[0].Exception.Message.Contains("(401) Unauthorized."))
+                    {
+                        # This is most likely an issue with the OAuth token.
+                        $consecutive401Errors++
+                        if ( ($consecutive401Errors -lt 2) -and $OAuth)
+                        {
+                            Log "Access denied response - checking OAuth token"
+                            ApplyEWSOauthCredentials
+                        }
+                        else
+                        {
+                            Log "Consecutive access denied errors encountered - stopping processing" Red
+                            Exit
+                        }
+                    }
+                    elseif (($Error[0].Exception.InnerException) -and $Error[0].Exception.InnerException.ToString().Contains("The operation has timed out"))
+                    {
+                        $consecutiveTimeOuts++
+                        if ($consecutiveTimeOuts -lt 2)
+                        {
+                            Log "Timeout response"
+                        }
+                        else
+                        {
+                            Log "Consecutive timeout errors encountered - terminating this batch" Red
+                            $finished = $true
+                        }
+                    }
+                    else
+                    {
+                        Log "ERROR ON MOVE: $($Error[0].Exception.Message)"
+                    }
+                }
+                else
+                {
+                    $finished = $true # Unknown error, so we finish processing as we don't know the best way to handle it
+                    $lastResponse = [String]::Empty
+                    try
+                    {
+                        if ($script:Tracer)
+                        {
+                            $lastResponse = $script:Tracer.LastResponse.Replace("<?xml version=`"1.0`" encoding=`"utf-8`"?>", "")
+                        }
+                    } catch {}
+                    if (![String]::IsNullOrEmpty($lastResponse))
+                    {
+                        $lastResponse = "<?xml version=`"1.0`" encoding=`"utf-8`"?>$lastResponse"
+                        $responseXml = [xml]$lastResponse
+	                    if ($responseXml.Trace.Envelope.Body.Fault.detail.ResponseCode.Value -eq "ErrorNoRespondingCASInDestinationSite")
+                        {
+                            # We get this error if the destination CAS (request was proxied) hasn't returned any data within the timeout (usually 60 seconds)
+
+                            $finished = $false
+                        }
+                        else
+                        {
+                            ReportError "ThrottledBatchMove"
+                        }
+                    }
+                    else
+                    {
+                        ReportError "ThrottledBatchMove"
+                    }
+                }
+            }
+        }
+        ApplyEWSOauthCredentials
+
+        if (!$WhatIf)
+        {
+            RemoveProcessedItemsFromList $moveIds $results $false $ItemsToMove
+        }
+        else
+        {
+            for ($i = 0; $i -lt $moveIds.Count; $i++)
+            {
+                $ItemsToMove.Remove($moveIds[$i])
+            }
+        }
+
+        if ($ItemsToMove.Count -ne 0)
+        {
+            Log "$($ItemsToMove.Count) items remaining in batch"
+        }
+        else
+        {
+            $finished = $true
+        }
+    }
+}
+
+
 Function GetFolder()
 {
 	# Return a reference to a folder specified by path
@@ -955,7 +1227,7 @@ Function GetFolder()
                         {
 				            $FolderResults = $Folder.FindFolders($SearchFilter, $View)
                         }
-                        catch {}
+                        catch{}
                     }
                 }
                 if ($FolderResults -eq $null)
@@ -1118,6 +1390,8 @@ Function RecoverFromFolder()
 
 	$MoreItems=$true
     $skipped = 0
+    $itemsToMove = New-Object System.Collections.ArrayList # Used when batching Move requests to keep track of the batch
+    $script:batchTargetFolder = $null
 	
 	while ($MoreItems)
 	{
@@ -1334,23 +1608,76 @@ Function RecoverFromFolder()
                     {
                         # Move the item
                         ApplyEWSOAuthCredentials
-                        try
+                        if ($BatchSize -lt 2)
                         {
-                            if ($RestoreAsCopy)
+                            try
                             {
-                                [void]$Item.Copy($targetFolder)
-                                Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) copied to $moveToFolder"
+                                if ($RestoreAsCopy)
+                                {
+                                    [void]$Item.Copy($targetFolder)
+                                    Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) copied to $moveToFolder"
+                                }
+                                else
+                                {
+                                    [void]$Item.Move($targetFolder)
+                                    Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) moved to $moveToFolder"
+                                }
                             }
-                            else
+                            catch
                             {
-                                [void]$Item.Move($targetFolder)
-                                Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) moved to $moveToFolder"
+                                if ( Throttled )
+                                {
+                                    # We've been throttled, so we try again
+                                    ApplyEWSOAuthCredentials
+                                    try
+                                    {
+                                        if ($RestoreAsCopy)
+                                        {
+                                            [void]$Item.Copy($targetFolder)
+                                            Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) copied to $moveToFolder"
+                                        }
+                                        else
+                                        {
+                                            [void]$Item.Move($targetFolder)
+                                            Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) moved to $moveToFolder"
+                                        }
+                                    }
+                                    catch
+                                    {
+                                        ReportError "RecoverItem"
+                                        Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) FAILED to recover item to $moveToFolder" Red
+                                    }
+                                }
+                                else
+                                {
+                                    ReportError "RecoverItem"
+                                    Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) FAILED to recover item to $moveToFolder" Red
+                                }
                             }
                         }
-                        catch
+                        else
                         {
-                            ReportError "RecoverItem"
-                            Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) FAILED to recover item to $moveToFolder" Red
+                            # Batch move items.  We add to the list until we have enough for a request.
+                            if ($script:batchTargetFolder -ne $targetFolder)
+                            {
+                                if ($itemsToMove.Count -gt 0)
+                                {
+                                    # Send the batch request to move items, as target folder has changed
+                                    LogVerbose "Sending batch request to move $($itemsToMove.Count) items as target folder changed"
+                                    ThrottledBatchMove $itemsToMove $script:batchTargetFolder $RestoreAsCopy
+                                    $itemsToMove = New-Object System.Collections.ArrayList
+                                }
+                                $script:batchTargetFolder = $targetFolder
+                            }
+                            [void]$itemsToMove.Add($item.Id)
+                            Log "Item $($Item.ItemClass): $($Item.Id.UniqueId) added for batch move to $moveToFolder"
+
+                            if ($itemsToMove.Count -ge $BatchSize)
+                            {
+                                # Send request as we've reached maximum batch size
+                                LogVerbose "Sending batch request to move $($itemsToMove.Count) items as maximum batch size reached"
+                                ThrottledBatchMove $itemsToMove $script:batchTargetFolder $RestoreAsCopy
+                            }
                         }
                     }
                     else
@@ -1370,6 +1697,14 @@ Function RecoverFromFolder()
 		}
 		$MoreItems=$FindResults.MoreAvailable
 	}
+    if ($itemsToMove.Count -gt 0)
+    {
+        # Send batch request as we've reached maximum size
+        LogVerbose "Sending batch request to move $($itemsToMove.Count) items (final batch)"
+        ThrottledBatchMove $itemsToMove $script:batchTargetFolder $RestoreAsCopy
+        $itemsToMove = $null
+    }
+
 }
 
 function ProcessMailbox()
@@ -1526,3 +1861,15 @@ Else
 	# Process as single mailbox
 	ProcessMailbox
 }
+
+if (![String]::IsNullOrEmpty($TraceFile))
+{
+    $script:Tracer.CloseStream()
+}
+if ($script:logFileStreamWriter)
+{
+    $script:logFileStreamWriter.Close()
+    $script:logFileStreamWriter.Dispose()
+}
+
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
