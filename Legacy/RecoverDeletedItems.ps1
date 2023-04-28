@@ -119,7 +119,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.1"
+$script:ScriptVersion = "1.2.2"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -1536,12 +1536,14 @@ Function RecoverFromFolder()
 
                 if ([String]::IsNullOrEmpty($moveToFolder))
                 {
+                    $folderItemType = "IPF.Note"
 			        switch -wildcard ($Item.ItemClass)
 			        {
 				        "IPM.Appointment*"
 				        {
 					        # Appointment, so move back to calendar
                             $moveToFolder = "Calendar"
+                            $folderItemType = "IPF.Appointment"
 				        }
 				
 				        "IPM.Note*"
@@ -1571,18 +1573,21 @@ Function RecoverFromFolder()
 				        {
 					        # Sticky note, move back to Notes folder
                             $moveToFolder = "Notes"
+                            $folderItemType = "IPF.StickyNote"
 				        }
 				
 				        "IPM.Contact*"
 				        {
 					        # Contact, so move back to Contacts folder
                             $moveToFolder = "Contacts"
+                            $folderItemType = "IPF.Contact"
 				        }
 				
 				        "IPM.Task*"
 				        {
 					        # Task, so move back to Tasks folder
                             $moveToFolder = "Tasks"
+                            $folderItemType = "IPF.Task"
 				        }
 				
 				        default
@@ -1591,6 +1596,15 @@ Function RecoverFromFolder()
                             if (!$WhatIf) { $skipped++ }
 				        }
 			        }
+                    if ($Archive -and ![String]::IsNullOrEmpty($moveToFolder) )
+                    {
+                        # We don't have WellKnownFolderNames for archive default folders, so we can't (easily) support localisation
+                        # We create a folder off the archive root if it doesn't already exist
+                        LogVerbose "Moving to default $moveToFolder folder in archive mailbox"
+                        $archiveDefaultFolder = GetFolder $script:rootFolder $moveToFolder $true $folderItemType
+                        $targetFolder = $archiveDefaultFolder.Id
+                        $moveToFolder = "ArchiveMsgFolderRoot\$moveToFolder"
+                    }
                 }
 
                 if (![String]::IsNullOrEmpty($moveToFolder))
@@ -1730,7 +1744,7 @@ function ProcessMailbox()
     }
 
     # Bind to root folder (fail if unsuccessful)
-    $rootFolder = ThrottledFolderBind $rootFolderId $null $script:service
+    $script:rootFolder = ThrottledFolderBind $rootFolderId $null $script:service
     if ($rootFolder -eq $null) { return }
 
     if (![String]::IsNullOrEmpty($RestoreToFolder))
