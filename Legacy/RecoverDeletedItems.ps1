@@ -32,8 +32,14 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Folder to restore from (if not specified, items are recovered from retention).  Use WellKnownFolderNames.DeletedItems to restore from Deleted Items folder.")]	
     [string]$RestoreFromFolder,
 
-    [Parameter(Mandatory=$False,HelpMessage="Folder to restore to (if not specified, items are recovered based on where they were deleted from, or their item type).")]	
+    [Parameter(Mandatory=$False,HelpMessage="Folder to restore to if original location cannot be determined (if not specified, default folder will be chosen dependent upon item type).")]	
     [string]$RestoreToFolder,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, all items will be restored to folder specified in -RestoreToFolder (none will be restored to original location).")]	
+    [switch]$RestoreToFolderOverride,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, any items from folders that cannot be found will not be restored.")]	
+    [switch]$SuppressDefaultFolderRestore,
 
     [Parameter(Mandatory=$False,HelpMessage="If this is specified and the restore folder needs to be created, the default item type for the created folder will be as defined here.  If missing, the default will be IPF.Note.")]	
     [string]$RestoreToFolderDefaultItemType = "IPF.Note",
@@ -119,7 +125,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.2"
+$script:ScriptVersion = "1.2.3"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -858,22 +864,22 @@ function GetFolderPath($Folder)
     if (!$Folder.Id)
     {
         # This isn't a folder.  Assume it's an Id and try binding to the folder
-        LogVerbose "Retrieving path for folder ID : $Folder"
 
         if ($script:folderPathCache.ContainsKey($Folder))
         {
             return $script:folderPathCache[$Folder]
         }
+        LogVerbose "Retrieving path for folder ID : $Folder"
         $Folder = ThrottledFolderBind $Folder $propset $script:service
         $parentFolder = $Folder
     }
     else
     {
-        LogVerbose "Retrieving path for folder: $($Folder.DisplayName)"
         if ($script:folderPathCache.ContainsKey($Folder.Id.UniqueId))
         {
             return $script:folderPathCache[$Folder.Id.UniqueId]
         }
+        LogVerbose "Retrieving path for folder: $($Folder.DisplayName)"
         $parentFolder = ThrottledFolderBind $Folder.Id $propset $Folder.Service
     }
 
@@ -1185,10 +1191,28 @@ Function GetFolder()
     {
         # Well known folder, so bind to it directly
         $wkf = $FolderPath.SubString(20)
+        if ($wkf.Contains("\"))
+        {
+            $RestOfFolderPathStart = $FolderPath.IndexOf("\")
+            $FolderPath = $FolderPath.Substring(($RestOfFolderPathStart+1))
+            $wkf = $wkf.Substring(0, ($RestOfFolderPathStart-20))
+        }
+        else
+        {
+            $FolderPath = ""
+        }
         LogVerbose "Attempting to bind to well known folder: $wkf ($mbx)"
         $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::$wkf, $mbx )
         $Folder = ThrottledFolderBind($folderId)
-        return $Folder
+        if ($Folder.Id)
+        {
+            LogVerbose "$wkf = $($Folder.Id)"
+        }
+        if ([String]::IsNullOrEmpty($FolderPath))
+        {
+            return $Folder
+        }
+        $RootFolder = $Folder
     }
 
     if ( $RootFolder -eq $null )
@@ -1350,6 +1374,43 @@ function ConvertEntryId($entryId)
     return $ewsId.UniqueId
 }
 
+function GetArchiveDefaultFolder($defaultFolderName)
+{
+    # Get the default folder (e.g. Inbox, Sent Items) in the archive mailbox (there is no WellKnownFolderName enumeration beyond ArchiveMsgFolderRoot)
+    # Cache results so we only have to work it out once - we can honour localisation by reading the DisplayName of the default folder in the primary mailbox
+
+    if (!$script:defaultArchiveFolders)
+    {
+        $script:defaultArchiveFolders = @{}
+    }
+
+    if ($script:defaultArchiveFolders.ContainsKey($defaultFolderName))
+    {
+        return $script:defaultArchiveFolders[$defaultFolderName]
+    }
+
+    $primaryDefaultFolderId = "WellKnownFolderName.$defaultFolderName"
+    $primaryDefaultFolder = GetFolder $script:rootFolder $primaryDefaultFolderId
+    LogVerbose "Default name for $defaultFolderName is $($primaryDefaultFolder.DisplayName)"
+    if (!$WhatIf)
+    {
+        $archiveDefaultFolder = GetFolder $script:rootFolder $primaryDefaultFolder.DisplayName $true $folderItemType
+        $script:defaultArchiveFolders.Add($defaultFolderName, $archiveDefaultFolder)
+        return $archiveDefaultFolder
+    }
+
+    $archiveDefaultFolder = GetFolder $script:rootFolder $primaryDefaultFolder.DisplayName
+    if ($archiveDefaultFolder -ne $null)
+    {
+        $script:defaultArchiveFolders.Add($defaultFolderName, $archiveDefaultFolder)
+        return $archiveDefaultFolder
+    }
+
+    $script:defaultArchiveFolders.Add($defaultFolderName, $null)
+    Log "Target default folder in archive does not exist.  Create suppressed due to -WhatIf: $defaultFolderName"
+    return $null
+}
+
 Function RecoverFromFolder()
 {
 	# Process all the items in the given folder and move them back to previous location
@@ -1392,6 +1453,7 @@ Function RecoverFromFolder()
     $skipped = 0
     $itemsToMove = New-Object System.Collections.ArrayList # Used when batching Move requests to keep track of the batch
     $script:batchTargetFolder = $null
+    $defaulFolders = @{}
 	
 	while ($MoreItems)
 	{
@@ -1466,7 +1528,7 @@ Function RecoverFromFolder()
 
             if ($itemShouldBeRestored)
             {
-                if ($script:RestoreTargetFolder)
+                if ($script:RestoreTargetFolder -and $RestoreToFolderOverride)
                 {
                     # We're restoring all items to a specific folder
                     $targetFolder = $script:RestoreTargetFolder.Id
@@ -1536,74 +1598,93 @@ Function RecoverFromFolder()
 
                 if ([String]::IsNullOrEmpty($moveToFolder))
                 {
-                    $folderItemType = "IPF.Note"
-			        switch -wildcard ($Item.ItemClass)
-			        {
-				        "IPM.Appointment*"
-				        {
-					        # Appointment, so move back to calendar
-                            $moveToFolder = "Calendar"
-                            $folderItemType = "IPF.Appointment"
-				        }
-				
-				        "IPM.Note*"
-				        {
-					        # Message; need to determine if sent or not
-					        Write-Verbose "Message is from me: $($Item.IsFromMe)"
-                            Write-Verbose "Message sender: $($Item.Sender)"
-                            $isFromMe = $Item.IsFromMe
-                            if (![String]::IsNullOrEmpty($MyEmailAddress))
-                            {
-                                if ($MyEmailAddress.ToLower().Equals($Item.Sender.Address.ToLower())) { $isFromMe = $true }
-                            }
-
-					        if ($isFromMe)
-					        {
-						        # This is a sent message
-                                $moveToFolder = "SentItems"
-					        }
-					        else
-					        {
-						        # This is a received message
-                                $moveToFolder = "Inbox"
-					        }
-				        }
-				
-				        "IPM.StickyNote*"
-				        {
-					        # Sticky note, move back to Notes folder
-                            $moveToFolder = "Notes"
-                            $folderItemType = "IPF.StickyNote"
-				        }
-				
-				        "IPM.Contact*"
-				        {
-					        # Contact, so move back to Contacts folder
-                            $moveToFolder = "Contacts"
-                            $folderItemType = "IPF.Contact"
-				        }
-				
-				        "IPM.Task*"
-				        {
-					        # Task, so move back to Tasks folder
-                            $moveToFolder = "Tasks"
-                            $folderItemType = "IPF.Task"
-				        }
-				
-				        default
-				        {
-					        Log "Item was not a class supported for recovery: $($Item.ItemClass)" Red
-                            if (!$WhatIf) { $skipped++ }
-				        }
-			        }
-                    if ($Archive -and ![String]::IsNullOrEmpty($moveToFolder) )
+                    if ($script:RestoreTargetFolder)
                     {
-                        # We don't have WellKnownFolderNames for archive default folders, so we can't (easily) support localisation
-                        # We create a folder off the archive root if it doesn't already exist
-                        LogVerbose "Moving to default $moveToFolder folder in archive mailbox"
-                        $archiveDefaultFolder = GetFolder $script:rootFolder $moveToFolder $true $folderItemType
-                        $targetFolder = $archiveDefaultFolder.Id
-                        $moveToFolder = "ArchiveMsgFolderRoot\$moveToFolder"
+                        # We restore item to specified folder as we couldn't find the original
+                        $targetFolder = $script:RestoreTargetFolder.Id
+                        $moveToFolder = GetFolderPath($targetFolder)                    }
+                    else
+                    {
+                        if ($SuppressDefaultFolderRestore)
+                        {
+					        Log "Item original location could not be found, skipping restore" Yellow
+                            if (!$WhatIf) { $skipped++ }                        }
+                        else
+                        {
+                            $folderItemType = "IPF.Note"
+			                switch -wildcard ($Item.ItemClass)
+			                {
+				                "IPM.Appointment*"
+				                {
+					                # Appointment, so move back to calendar
+                                    $moveToFolder = "Calendar"
+                                    $folderItemType = "IPF.Appointment"
+				                }
+				
+				                "IPM.Note*"
+				                {
+					                # Message; need to determine if sent or not
+					                Write-Verbose "Message is from me: $($Item.IsFromMe)"
+                                    Write-Verbose "Message sender: $($Item.Sender)"
+                                    $isFromMe = $Item.IsFromMe
+                                    if (![String]::IsNullOrEmpty($MyEmailAddress))
+                                    {
+                                        if ($MyEmailAddress.ToLower().Equals($Item.Sender.Address.ToLower())) { $isFromMe = $true }
+                                    }
+
+					                if ($isFromMe)
+					                {
+						                # This is a sent message
+                                        $moveToFolder = "SentItems"
+					                }
+					                else
+					                {
+						                # This is a received message
+                                        $moveToFolder = "Inbox"
+					                }
+				                }
+				
+				                "IPM.StickyNote*"
+				                {
+					                # Sticky note, move back to Notes folder
+                                    $moveToFolder = "Notes"
+                                    $folderItemType = "IPF.StickyNote"
+				                }
+				
+				                "IPM.Contact*"
+				                {
+					                # Contact, so move back to Contacts folder
+                                    $moveToFolder = "Contacts"
+                                    $folderItemType = "IPF.Contact"
+				                }
+				
+				                "IPM.Task*"
+				                {
+					                # Task, so move back to Tasks folder
+                                    $moveToFolder = "Tasks"
+                                    $folderItemType = "IPF.Task"
+				                }
+				
+				                default
+				                {
+					                Log "Item was not a class supported for default folder recovery: $($Item.ItemClass)" Red
+                                    if (!$WhatIf) { $skipped++ }
+				                }
+			                }
+                            if ($Archive -and ![String]::IsNullOrEmpty($moveToFolder) )
+                            {
+                                # We don't have WellKnownFolderNames for archive default folders, so we can't (easily) support localisation
+                                # We create a folder off the archive root if it doesn't already exist
+                                LogVerbose "Moving to default $moveToFolder folder in archive mailbox"
+
+                                $archiveDefaultFolder = GetArchiveDefaultFolder $moveToFolder
+                                if ($archiveDefaultFolder -ne $null)
+                                {
+                                    $targetFolder = $archiveDefaultFolder.Id
+                                    $moveToFolder = "ArchiveMsgFolderRoot\$($archiveDefaultFolder.DisplayName)"
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1732,6 +1813,8 @@ function ProcessMailbox()
         return
 	}
 	
+    $script:defaultArchiveFolders = @{} # Ensure we don't have any old data hanging around
+
 	$mbx = New-Object Microsoft.Exchange.WebServices.Data.Mailbox( $Mailbox )
     $rootFolderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $mbx )
     if ($Archive)
