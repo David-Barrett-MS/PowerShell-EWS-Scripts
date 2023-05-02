@@ -32,6 +32,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Folder to restore from (if not specified, items are recovered from retention).  Use WellKnownFolderNames.DeletedItems to restore from Deleted Items folder.")]	
     [string]$RestoreFromFolder,
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, subfolders of the RestoreFromFolder will also be processed.")]	
+    [switch]$RecurseSubfolders,
+
     [Parameter(Mandatory=$False,HelpMessage="Folder to restore to if original location cannot be determined (if not specified, default folder will be chosen dependent upon item type).")]	
     [string]$RestoreToFolder,
 
@@ -125,7 +128,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.3"
+$script:ScriptVersion = "1.2.4"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -1312,6 +1315,11 @@ function ReadMailboxFolderHierarchy()
 {
     # We read the mailbox folder tree to create a dictionary of folder Ids referenced to their PR_SOURCE_KEY (this enables original folder recovery)
 
+    if ($script:FoldersBySourceKey -and $script:FoldersBySourceKey.Count -gt 0)
+    {
+        return
+    }
+
     $PR_SOURCE_KEY = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x65E0,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
 
     $folderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(1000)
@@ -1422,6 +1430,8 @@ Function RecoverFromFolder()
 	$Folder=$args[0]
 
     ReadMailboxFolderHierarchy
+
+    LogVerbose "Recovering from folder: $(GetFolderPath($Folder))"
 	
     $LastActiveParentID = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x348A,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
     $PidLidSpamOriginalFolder = new-object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition([Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::Common,0x859C,[Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
@@ -1800,6 +1810,24 @@ Function RecoverFromFolder()
         $itemsToMove = $null
     }
 
+
+    if ($RecurseSubfolders)
+    {
+        # Process subfolders
+        LogVerbose "Processing subfolders of $(GetFolderPath($folder))"
+        $FolderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(500)
+        $moreFolders = $true
+        while ($moreFolders)
+        {
+            $subFolderResults = $folder.FindFolders($FolderView)
+            $FolderView.Offset += 500
+            $moreItems = $subFolderResults.MoreItems
+            ForEach ($subfolder in $subFolderResults.Folders)
+            {
+                RecoverFromFolder $subfolder
+            }
+        }
+    }
 }
 
 function ProcessMailbox()
