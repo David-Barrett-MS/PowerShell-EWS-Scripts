@@ -128,38 +128,15 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.4"
+$script:ScriptVersion = "1.2.5"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
 
-Function LogToFile([string]$Details)
+Function LogToFile([string]$logInfo)
 {
 	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
-	"$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())   $Details" | Out-File $LogFile -Append
-}
-
-Function UpdateDetailsWithCallingMethod([string]$Details)
-{
-    # Update the log message with details of the function that logged it
-    $timeInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())"
-    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 on the stack
-    if (![String]::IsNullOrEmpty($callingFunction))
-    {
-        return "$timeInfo [$callingFunction] $Details"
-    }
-    return "$timeInfo $Details"
-}
-
-Function Log([string]$Details, [ConsoleColor]$Colour)
-{
-    if ($Colour -eq $null)
-    {
-        $Colour = [ConsoleColor]::White
-    }
-    $Details = UpdateDetailsWithCallingMethod( $Details )
-    Write-Host $Details -ForegroundColor $Colour
-
+    
     if ($FastFileLogging)
     {
         # Writing the log file using a FileStream (that we keep open) is significantly faster than using out-file (which opens, writes, then closes the file each time it is called)
@@ -195,6 +172,32 @@ Function Log([string]$Details, [ConsoleColor]$Colour)
             }
         }
     }
+
+	$logInfo | Out-File $LogFile -Append
+}
+
+Function UpdateDetailsWithCallingMethod([string]$Details)
+{
+    # Update the log message with details of the function that logged it
+    $timeInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())"
+    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 on the stack
+    if (![String]::IsNullOrEmpty($callingFunction))
+    {
+        return "$timeInfo [$callingFunction] $Details"
+    }
+    return "$timeInfo $Details"
+}
+
+Function Log([string]$Details, [ConsoleColor]$Colour)
+{
+    if ($Colour -eq $null)
+    {
+        $Colour = [ConsoleColor]::White
+    }
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Host $Details -ForegroundColor $Colour
+
+
 
     LogToFile $Details
 }
@@ -1991,10 +1994,10 @@ if (![String]::IsNullOrEmpty($TraceFile))
 {
     $script:Tracer.CloseStream()
 }
+
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
 if ($script:logFileStreamWriter)
 {
     $script:logFileStreamWriter.Close()
     $script:logFileStreamWriter.Dispose()
 }
-
-Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
