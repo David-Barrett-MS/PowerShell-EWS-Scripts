@@ -12,6 +12,9 @@
 # SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
+# TODO:
+# - Add advanced property filtering
+
 param (
     [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed.")]
     [ValidateNotNullOrEmpty()]
@@ -46,6 +49,9 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If this is specified and the restore folder needs to be created, the default item type for the created folder will be as defined here.  If missing, the default will be IPF.Note.")]	
     [string]$RestoreToFolderDefaultItemType = "IPF.Note",
+
+    [Parameter(Mandatory=$False,HelpMessage="If this is specified then any items marked as Drafts will be ignored.")]
+    [switch]$IgnoreDrafts,
 
     [Parameter(Mandatory=$False,HelpMessage="If this is specified then the item is copied back to the restore folder instead of being moved.")]
     [switch]$RestoreAsCopy,
@@ -128,14 +134,14 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.5"
+$script:ScriptVersion = "1.2.6"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
 
 Function LogToFile([string]$logInfo)
 {
-	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
+    if ( [String]::IsNullOrEmpty($LogFile) ) { return }
     
     if ($FastFileLogging)
     {
@@ -716,21 +722,21 @@ function CreateService($smtpAddress)
     {
     	try
     	{
-		    LogVerbose "Performing autodiscover for $smtpAddress"
-		    if ( $AllowInsecureRedirection )
-		    {
-			    $exchangeService.AutodiscoverUrl($smtpAddress, {$True})
-		    }
-		    else
-		    {
-			    $exchangeService.AutodiscoverUrl($smtpAddress)
-		    }
-		    if ([string]::IsNullOrEmpty($exchangeService.Url))
-		    {
-			    Log "$smtpAddress : autodiscover failed" Red
-			    return $Null
-		    }
-		    LogVerbose "EWS Url found: $($exchangeService.Url)"
+            LogVerbose "Performing autodiscover for $smtpAddress"
+            if ( $AllowInsecureRedirection )
+            {
+                $exchangeService.AutodiscoverUrl($smtpAddress, {$True})
+            }
+            else
+            {
+                $exchangeService.AutodiscoverUrl($smtpAddress)
+            }
+            if ([string]::IsNullOrEmpty($exchangeService.Url))
+            {
+                Log "$smtpAddress : autodiscover failed" Red
+                return $Null
+            }
+            LogVerbose "EWS Url found: $($exchangeService.Url)"
     	}
     	catch
     	{
@@ -751,7 +757,7 @@ function CreateService($smtpAddress)
  
     if ($Impersonate)
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
+        $exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
         $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
 	}
 
@@ -1015,9 +1021,9 @@ Function ThrottledBatchMove()
     $consecutiveTimeOuts = 0
     LogVerbose "Batch move to folder $TargetFolderId"
 
-	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
-	$itemIdType = [Type] $itemId.GetType()
-	$genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
+    $itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
+    $itemIdType = [Type] $itemId.GetType()
+    $genericItemIdList = [System.Collections.Generic.List``1].MakeGenericType(@($itemIdType))
     
     $finished = $false
 
@@ -1066,12 +1072,12 @@ Function ThrottledBatchMove()
                 if ( $Copy )
                 {
                     Log "Sending batch request to copy $($moveIds.Count) items" Green
-			        $results = $script:service.CopyItems( $moveIds, $TargetFolderId, $false )
+                    $results = $script:service.CopyItems( $moveIds, $TargetFolderId, $false )
                 }
                 else
                 {
                     Log "Sending batch request to move $($moveIds.Count) items" Green
-			        $results = $script:service.MoveItems( $moveIds, $TargetFolderId, $false)
+                    $results = $script:service.MoveItems( $moveIds, $TargetFolderId, $false)
                 }
                 LogVerbose "Batch request completed"
             }
@@ -1134,7 +1140,7 @@ Function ThrottledBatchMove()
                     {
                         $lastResponse = "<?xml version=`"1.0`" encoding=`"utf-8`"?>$lastResponse"
                         $responseXml = [xml]$lastResponse
-	                    if ($responseXml.Trace.Envelope.Body.Fault.detail.ResponseCode.Value -eq "ErrorNoRespondingCASInDestinationSite")
+                        if ($responseXml.Trace.Envelope.Body.Fault.detail.ResponseCode.Value -eq "ErrorNoRespondingCASInDestinationSite")
                         {
                             # We get this error if the destination CAS (request was proxied) hasn't returned any data within the timeout (usually 60 seconds)
 
@@ -1230,21 +1236,21 @@ Function GetFolder()
 	$Folder = $RootFolder
 	if ($FolderPath -ne '\')
 	{
-		$PathElements = $FolderPath -split '\\'
-		For ($i=0; $i -lt $PathElements.Count; $i++)
-		{
-			if ($PathElements[$i])
-			{
-				$View = New-Object  Microsoft.Exchange.WebServices.Data.FolderView(2,0)
-				$View.PropertySet = [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly
+        $PathElements = $FolderPath -split '\\'
+        For ($i=0; $i -lt $PathElements.Count; $i++)
+        {
+	        if ($PathElements[$i])
+	        {
+		        $View = New-Object  Microsoft.Exchange.WebServices.Data.FolderView(2,0)
+		        $View.PropertySet = [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly
 						
-				$SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, $PathElements[$i])
+		        $SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, $PathElements[$i])
 				
                 $FolderResults = $Null
                 ApplyEWSOAuthCredentials
                 try
                 {
-				    $FolderResults = $Folder.FindFolders($SearchFilter, $View)
+			        $FolderResults = $Folder.FindFolders($SearchFilter, $View)
                     Start-Sleep -Milliseconds $script:currentThrottlingDelay
                 }
                 catch {}
@@ -1265,20 +1271,20 @@ Function GetFolder()
                     return $null
                 }
 
-				if ($FolderResults.TotalCount -gt 1)
-				{
-					# We have more than one folder returned... We shouldn't ever get this, as it means we have duplicate folders
-					$Folder = $null
-					Write-Host "Duplicate folders ($($PathElements[$i])) found in path $FolderPath" -ForegroundColor Red
-					break
-				}
+		        if ($FolderResults.TotalCount -gt 1)
+		        {
+			        # We have more than one folder returned... We shouldn't ever get this, as it means we have duplicate folders
+			        $Folder = $null
+			        Write-Host "Duplicate folders ($($PathElements[$i])) found in path $FolderPath" -ForegroundColor Red
+			        break
+		        }
                 elseif ( $FolderResults.TotalCount -eq 0 )
                 {
                     if ($Create)
                     {
                         # Folder not found, so attempt to create it
-					    $subfolder = New-Object Microsoft.Exchange.WebServices.Data.Folder($RootFolder.Service)
-					    $subfolder.DisplayName = $PathElements[$i]
+				        $subfolder = New-Object Microsoft.Exchange.WebServices.Data.Folder($RootFolder.Service)
+				        $subfolder.DisplayName = $PathElements[$i]
                         $subfolder.FolderClass = $CreatedFolderType
                         ApplyEWSOAuthCredentials
                         try
@@ -1297,18 +1303,18 @@ Function GetFolder()
                     }
                     else
                     {
-					    # Folder doesn't exist
-					    $Folder = $null
-					    Log "Folder $($PathElements[$i]) doesn't exist in path $FolderPath" Red
-					    break
+				        # Folder doesn't exist
+				        $Folder = $null
+				        Log "Folder $($PathElements[$i]) doesn't exist in path $FolderPath" Red
+				        break
                     }
                 }
                 else
                 {
-				    $Folder = ThrottledFolderBind $FolderResults.Folders[0].Id $null $RootFolder.Service
+			        $Folder = ThrottledFolderBind $FolderResults.Folders[0].Id $null $RootFolder.Service
                 }
-			}
-		}
+	        }
+        }
 	}
 	
 	$Folder
@@ -1468,11 +1474,12 @@ Function RecoverFromFolder()
     $script:batchTargetFolder = $null
     $defaulFolders = @{}
 	
-	while ($MoreItems)
-	{
-		$View = New-Object Microsoft.Exchange.WebServices.Data.ItemView(500, $skipped, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
-		$View.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,
-                                   [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsFromMe, [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender, [Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime, $PidLidSpamOriginalFolder, $LastActiveParentID, $PidTagPolicyTag)
+    while ($MoreItems)
+    {
+        $View = New-Object Microsoft.Exchange.WebServices.Data.ItemView(500, $skipped, [Microsoft.Exchange.Webservices.Data.OffsetBasePoint]::Beginning)
+        $View.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,
+                                    [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsFromMe, [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender, [Microsoft.Exchange.WebServices.Data.ItemSchema]::LastModifiedTime,
+                                    [Microsoft.Exchange.WebServices.Data.ItemSchema]::IsDraft, $PidLidSpamOriginalFolder, $LastActiveParentID, $PidTagPolicyTag)
 
         if ($Exchange2007)
         {
@@ -1482,7 +1489,7 @@ Function RecoverFromFolder()
         else
         {
             ApplyEWSOAuthCredentials
-		    $FindResults=$service.FindItems($Folder.Id, $View)
+	        $FindResults=$service.FindItems($Folder.Id, $View)
         }
 		
 		ForEach ($Item in $FindResults.Items)
@@ -1491,7 +1498,12 @@ Function RecoverFromFolder()
             LogVerbose "Last modified time: $($Item.LastModifiedTime)"
 
             $itemShouldBeRestored = $True
-            if ($restorePolicyTagGuid)
+            if ($IgnoreDrafts -and $item.IsDraft)
+            {
+                LogVerbose "Ignoring draft item"
+                $itemShouldBeRestored = $False
+            }
+            if ($itemShouldBeRestored -and $restorePolicyTagGuid)
             {
                 foreach ($prop in $Item.ExtendedProperties)
                 {
@@ -1509,11 +1521,11 @@ Function RecoverFromFolder()
                 }
             }
 
-            if ($RestoreStart)
+            if ($itemShouldBeRestored -and $RestoreStart)
             {    
                 if ($Item.LastModifiedTime -lt $RestoreStart) { $itemShouldBeRestored = $False; LogVerbose "Item is not within restore time range (start check)" }
             }
-            if ($RestoreEnd)
+            if ($itemShouldBeRestored -and $RestoreEnd)
             {
                 if ($Item.LastModifiedTime -gt $RestoreEnd) { $itemShouldBeRestored = $False; LogVerbose "Item is not within restore time range (end check)" }
             }
