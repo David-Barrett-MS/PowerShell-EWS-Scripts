@@ -50,7 +50,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this is specified and the restore folder needs to be created, the default item type for the created folder will be as defined here.  If missing, the default will be IPF.Note.")]	
     [string]$RestoreToFolderDefaultItemType = "IPF.Note",
 
-    [Parameter(Mandatory=$False,HelpMessage="If this is specified then any items marked as Drafts will be ignored.")]
+    [Parameter(Mandatory=$False,HelpMessage="If this is specified then any items marked as draft will be ignored.")]
     [switch]$IgnoreDrafts,
 
     [Parameter(Mandatory=$False,HelpMessage="If this is specified then the item is copied back to the restore folder instead of being moved.")]
@@ -134,7 +134,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.6"
+$script:ScriptVersion = "1.2.7"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -745,16 +745,6 @@ function CreateService($smtpAddress)
     	}
     }
 
-    if ($exchangeService.URL.AbsoluteUri.ToLower().Equals("https://outlook.office365.com/ews/exchange.asmx"))
-    {
-        # This is Office 365, so we'll add a small delay to try and avoid throttling
-        if ($script:currentThrottlingDelay -lt 100)
-        {
-            $script:currentThrottlingDelay = 100
-            LogVerbose "Office 365 mailbox, throttling delay set to $($script:currentThrottlingDelay)ms"
-        }
-    }
- 
     if ($Impersonate)
     {
         $exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
@@ -786,9 +776,6 @@ Function Throttled()
     if ($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value.Name -eq "BackOffMilliseconds")
     {
         # We are throttled, and the server has told us how long to back off for
-        IncreaseThrottlingDelay
-
-        # Now back off for the time given by the server
         Log "Throttling detected, server requested back off for $($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text") milliseconds" Yellow
         Start-Sleep -Milliseconds $responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text"
         Log "Throttling budget should now be reset, resuming operations" Gray
@@ -826,7 +813,6 @@ function ThrottledFolderBind()
         {
             LogVerbose "Successfully bound to folder $($folder.DisplayName)"
         }
-        Start-Sleep -Milliseconds $script:currentThrottlingDelay
         return $folder
     }
     catch {}
@@ -1834,6 +1820,7 @@ Function RecoverFromFolder()
         $moreFolders = $true
         while ($moreFolders)
         {
+            ApplyEWSOAuthCredentials
             $subFolderResults = $folder.FindFolders($FolderView)
             $FolderView.Offset += 500
             $moreItems = $subFolderResults.MoreItems
