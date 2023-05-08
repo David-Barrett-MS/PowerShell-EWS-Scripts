@@ -134,7 +134,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.7"
+$script:ScriptVersion = "1.2.8"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -1822,11 +1822,19 @@ Function RecoverFromFolder()
         {
             ApplyEWSOAuthCredentials
             $subFolderResults = $folder.FindFolders($FolderView)
-            $FolderView.Offset += 500
-            $moreItems = $subFolderResults.MoreItems
-            ForEach ($subfolder in $subFolderResults.Folders)
+            if ($subFolderResults)
             {
-                RecoverFromFolder $subfolder
+                $FolderView.Offset += 500
+                $moreFolders = $subFolderResults.MoreAvailable
+                ForEach ($subfolder in $subFolderResults.Folders)
+                {
+                    RecoverFromFolder $subfolder
+                }
+            }
+            else
+            {
+                $moreFolders = $False
+                Log "No subfolders returned for $(GetFolderPath($folder))" Red
             }
         }
     }
