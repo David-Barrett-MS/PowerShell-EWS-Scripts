@@ -167,8 +167,8 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.6"
-
+$script:ScriptVersion = "1.2.7"
+$scriptStartTime = [DateTime]::Now
 
 # Define our functions
 
@@ -1487,8 +1487,40 @@ Function MoveItems()
 				        $Filter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName, $SourceSubFolderObject.DisplayName)
 				        $FolderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(2)
                         $FolderView.PropertySet = $script:requiredFolderProperties
-				        $FindFolderResults = $TargetFolderObject.FindFolders($Filter, $FolderView)
-				        if ($FindFolderResults.TotalCount -eq 0)
+                        $FindFolderResults = $null
+                        try
+                        {
+                            $attempts = 0
+                            while ($FindFolderResults -eq $null -and $attempts -lt 3)
+                            {
+	                            $FindFolderResults = $TargetFolderObject.FindFolders($Filter, $FolderView)
+                                $attempts++
+                                if ($FindFolderResults -eq $null)
+                                {
+                                    if (!Throttled)
+                                    {
+                                        $attempts = 10       
+                                    }
+
+                                }
+                            }
+                        }
+                        catch {}
+                        if ($FindFolderResults -eq $null)
+                        {
+                            if ($WhatIf -and $CreateTargetFolder)
+                            {
+                                Log "Target folder not created due to -WhatIf: $($SourceSubFolderObject.DisplayName)"
+                                $TargetFolderObject = New-Object PsObject
+                                $TargetFolderObject | Add-Member NoteProperty DisplayName $SourceSubFolderObject.DisplayName
+                            }
+                            else
+                            {
+                                Log "[MoveItems]FAILED TO LOCATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)" Red
+                                $TargetSubFolderObject = $null
+                            }
+                        }
+                        elseif ($FindFolderResults.TotalCount -eq 0)
 				        {
                             LogVerbose "[MoveItems]Creating target folder $($SourceSubFolderObject.DisplayName)"
                             if ( $SourceSubFolderObject.FolderClass -eq "IPF.Task" )
@@ -1993,7 +2025,13 @@ function ProcessMailbox()
             }
             else
             {
-	            $TargetFolderObject = GetFolder $script:targetMailboxRoot $PrimaryFolder $CreateTargetFolder $TargetMailbox
+	            $TargetFolderObject = GetFolder $script:targetMailboxRoot $PrimaryFolder ($CreateTargetFolder -and -not $WhatIf) $TargetMailbox
+                if ($TargetFolderObject -eq $null -and $WhatIf)
+                {
+                    Log "Folder not created due to -WhatIf: $PrimaryFolder"
+                    $TargetFolderObject = New-Object PsObject
+                    $TargetFolderObject | Add-Member NoteProperty DisplayName $PrimaryFolder
+                }
             }
         }
 
@@ -2054,6 +2092,7 @@ function ProcessMailbox()
         }
     }
     Write-Host "Finished processing mailbox $SourceMailbox" -ForegroundColor Gray
+    $sourceMailbox
 }
 
 
@@ -2162,6 +2201,8 @@ if ($script:Tracer -ne $null)
     $script:Tracer.Close()
 }
 
+
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
 if ($script:logFileStreamWriter)
 {
     $script:logFileStreamWriter.Close()
