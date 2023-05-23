@@ -167,7 +167,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.7"
+$script:ScriptVersion = "1.2.8"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -354,6 +354,7 @@ function GetTokenWithCertificate
     $authResult = $acquire.ExecuteAsync().Result
     $script:oauthToken = $authResult
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
     $script:Impersonate = $true
 }
 
@@ -462,7 +463,12 @@ function ApplyEWSOAuthCredentials
     if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
     if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
+    if ($OAuthCertificate -ne $null)
+    {
+        $global:ttest= $script:oauthToken
+        if ( [DateTime]::Now -ge $script:oauthToken.ExpiresOn.DateTime) { return }
+    }
+    elseif ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
     LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
@@ -588,14 +594,6 @@ Function CreateTraceListener($service)
 
     if ($script:Tracer -eq $null)
     {
-        $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-        $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-        $Params.GenerateExecutable=$False
-        $Params.GenerateInMemory=$True
-        $Params.IncludeDebugInformation=$False
-	    $Params.ReferencedAssemblies.Add("System.dll") | Out-Null
-        $Params.ReferencedAssemblies.Add($EWSManagedApiPath) | Out-Null
-
         $traceFileForCode = ""
 
         if (![String]::IsNullOrEmpty($TraceFile))
@@ -611,85 +609,75 @@ Function CreateTraceListener($service)
 		    using System.Threading;
 		    using Microsoft.Exchange.WebServices.Data;
 		
-            namespace TraceListener {
-		        class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
-		        {
-			        private StreamWriter _traceStream = null;
-                    private string _lastResponse = String.Empty;
+		    public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+		    {
+			    private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
 
-			        public EWSTracer()
-			        {
+			    public EWSTracer()
+			    {
 "@
-        if (![String]::IsNullOrEmpty(($traceFileForCode)))
-        {
-            $TraceListenerClass = 
+    if (![String]::IsNullOrEmpty(($traceFileForCode)))
+    {
+        $TraceListenerClass = 
 @"
 $TraceListenerClass
-				        try
-				        {
-					        _traceStream = File.AppendText("$traceFileForCode");
-				        }
-				        catch { }
+				    try
+				    {
+					    _traceStream = File.AppendText("$traceFileForCode");
+				    }
+				    catch { }
 "@
-        }
+    }
 
-            $TraceListenerClass = 
+        $TraceListenerClass = 
 @"
 $TraceListenerClass			        }
 
-			        ~EWSTracer()
-			        {
-                        Close();
-			        }
+			    ~EWSTracer()
+			    {
+                    Close();
+			    }
 
-                    public void Close()
-			        {
-				        try
-				        {
-					        _traceStream.Flush();
-					        _traceStream.Close();
-				        }
-				        catch { }
-			        }
+                public void Close()
+			    {
+				    try
+				    {
+					    _traceStream.Flush();
+					    _traceStream.Close();
+				    }
+				    catch { }
+			    }
 
 
-			        public void Trace(string traceType, string traceMessage)
-			        {
-                        if ( traceType.Equals("EwsResponse") )
-                            _lastResponse = traceMessage;
+			    public void Trace(string traceType, string traceMessage)
+			    {
+                    if ( traceType.Equals("EwsResponse") )
+                        _lastResponse = traceMessage;
 
-                        if ( traceType.Equals("EwsRequest") )
-                            _lastResponse = String.Empty;
+                    if ( traceType.Equals("EwsRequest") )
+                        _lastResponse = String.Empty;
 
-				        if (_traceStream == null)
-					        return;
+				    if (_traceStream == null)
+					    return;
 
-				        lock (this)
-				        {
-					        try
-					        {
-						        _traceStream.WriteLine(traceMessage);
-						        _traceStream.Flush();
-					        }
-					        catch { }
-				        }
-			        }
+					try
+					{
+						_traceStream.WriteLine(traceMessage);
+						_traceStream.Flush();
+					}
+					catch { }
+			    }
 
-                    public string LastResponse
-                    {
-                        get { return _lastResponse; }
-                    }
-		        }
-            }
+                public string LastResponse
+                {
+                    get { return _lastResponse; }
+                }
+		    }
 "@
 
-        $script:Tracer = $null
-        $TraceCompilation=$Provider.CompileAssemblyFromSource($Params,$TraceListenerClass)
-        If ($TraceCompilation)
-        {
-            $TraceAssembly=$TraceCompilation.CompiledAssembly
-            $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
-        }
+        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies .\Microsoft.Exchange.WebServices.dll
+        $script:Tracer=[EWSTracer]::new()
     }
 }
 
@@ -707,7 +695,7 @@ Function DecreaseBatchSize()
 Function Throttled()
 {
     # Checks if we've been throttled.  If we have, we wait for the specified number of BackOffMilliSeconds before returning
-    if ([String]::IsNullOrEmpty($script:Tracer.LastResponse))
+    if ( $script:Tracer -eq $null -or [String]::IsNullOrEmpty($script:Tracer.LastResponse))
     {
         return $false # Throttling does return a response, if we don't have one, then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
     }
