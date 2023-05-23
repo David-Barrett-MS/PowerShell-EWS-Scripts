@@ -1,3 +1,5 @@
 Legacy/.vscode/launch.json
 *.dll
 *.lnk
+Legacy/Microsoft.Identity.Client.xml
+Legacy/Microsoft.IdentityModel.Abstractions.xml
