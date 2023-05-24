@@ -167,7 +167,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.8"
+$script:ScriptVersion = "1.2.9"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -676,7 +676,7 @@ $TraceListenerClass			        }
 		    }
 "@
 
-        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies .\Microsoft.Exchange.WebServices.dll
+        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
         $script:Tracer=[EWSTracer]::new()
     }
 }
