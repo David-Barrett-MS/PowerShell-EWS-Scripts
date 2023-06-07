@@ -161,13 +161,16 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled)")]
     [switch]$FastFileLogging,
 
+    [Parameter(Mandatory=$False,HelpMessage="Enables token debugging (for development purposes - do not use)")]	
+    [switch]$DebugTokenRenewal,
+
     [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]
     [string]$TraceFile,
 
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.2.9"
+$script:ScriptVersion = "1.3.0"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -356,6 +359,11 @@ function GetTokenWithCertificate
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
     $script:oauthTokenAcquireTime = [DateTime]::UtcNow
     $script:Impersonate = $true
+
+    if ($DebugTokenRenewal)
+    {
+        $global:certAuthResult = $authResult
+    }
 }
 
 function GetTokenViaCode
@@ -374,12 +382,12 @@ function GetTokenViaCode
     $codeEnd = $authcode.IndexOf("&session_state=")
     if ($codeEnd -gt 0)
     {
-        $authcode = $authcode.Substring(0, $codeEnd)
+        $script:AuthCode = $authcode.Substring(0, $codeEnd)
     }
     Write-Verbose "Using auth code: $authcode"
 
     # Acquire token (using the auth code)
-    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$script:AuthCode;redirect_uri=$OAuthRedirectUri}
     try
     {
         $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
@@ -389,6 +397,30 @@ function GetTokenViaCode
     catch
     {
         Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function RenewOAuthToken
+{
+    # Renew the delegate token (original token was obtained by auth code, but we can now renew using the access token)
+    if (!$script:oAuthToken)
+    {
+        # We don't have a token, so we can't renew
+        GetTokenViaCode
+        return
+    }
+
+    $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oauthToken.refresh_token}
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to renew OAuth token (auth code grant)" -ForegroundColor Red
         exit # Failed to obtain a token
     }
 }
@@ -433,22 +465,27 @@ function GetOAuthCredentials
             $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
             return $exchangeCredentials
         }
-
         # Token needs renewing
-
     }
 
-    if (![String]::IsNullOrEmpty($OAuthSecretKey))
-    {
-        GetTokenWithKey
-    }
-    elseif ($OAuthCertificate -ne $null)
+    if ($OAuthCertificate -ne $null)
     {
         GetTokenWithCertificate
     }
+    elseif (![String]::IsNullOrEmpty($OAuthSecretKey))
+    {
+        GetTokenWithKey
+    }
     else
     {
-        GetTokenViaCode
+        if ($RenewToken)
+        {
+            RenewOAuthToken
+        }
+        else
+        {
+            GetTokenViaCode
+        }
     }
 
     # If we get here we have a valid token
@@ -456,38 +493,88 @@ function GetOAuthCredentials
     return $exchangeCredentials
 }
 
+$script:oAuthDebugStop = $false
 function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
     if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
-    if ( $script:services.Count -lt 1 ) { return }
+
+    
+    if ($DebugTokenRenewal -and $script:oauthToken)
+    {
+        # When debugging tokens, we stop after on every other EWS call and wait for the token to expire
+        if ($script:oAuthDebugStop)
+        {
+            # Wait until token expires (we do this after every call when debugging OAuth)
+            # Access tokens can't be revoked, but a policy can be assigned to reduce lifetime to 10 minutes: https://learn.microsoft.com/en-us/graph/api/resources/tokenlifetimepolicy?view=graph-rest-1.0
+            if ($OAuthCertificate -ne $null)
+            {
+                $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+            }
+            else
+            {
+                $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
+            }
+            $timeUntilExpiry = $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            if ($timeUntilExpiry -gt 0)
+            {
+                Write-Host "Waiting until token has expired: $tokenExpire (UTC)" -ForegroundColor Cyan
+                Start-Sleep -Seconds $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            }
+            Write-Host "Token expired, continuing..." -ForegroundColor Cyan
+            $oAuthDebugStop = $false
+        }
+        else
+        {
+            $script:oAuthDebugStop = $true
+        }
+    }
+    
     if ($OAuthCertificate -ne $null)
     {
-        $global:ttest= $script:oauthToken
-        if ( [DateTime]::Now -ge $script:oauthToken.ExpiresOn.DateTime) { return }
+        if ( [DateTime]::UtcNow -ge $script:oauthToken.ExpiresOn.UtcDateTime) { return }
     }
-    elseif ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
+    elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
     LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
-    { 
-        Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
-        exit # We no longer have access to the mailbox, so we stop here
+
+    if ($OAuthCertificate -ne $null)
+    {
+        $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+        if ( [DateTime]::UtcNow -ge $tokenExpire)
+        {
+            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed (certificate auth)"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+    }
+    else
+    {
+        if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
+        { 
+            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+        $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
     }
 
-    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
-            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
+            $service.Credentials = $exchangeCredentials
         }
         LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
+    }
+
+    if ($DebugTokenRenewal)
+    {
+        $global:oAuthTokenDebug = $script:oauthToken
     }
 }
 
@@ -551,34 +638,27 @@ Function CurrentUserPrimarySmtpAddress()
 Function TrustAllCerts()
 {
     # Implement call-back to override certificate handling (and accept all)
-    $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-    $Compiler=$Provider.CreateCompiler()
-    $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-    $Params.GenerateExecutable=$False
-    $Params.GenerateInMemory=$True
-    $Params.IncludeDebugInformation=$False
-    $Params.ReferencedAssemblies.Add("System.DLL") | Out-Null
 
     $TASource=@'
         namespace Local.ToolkitExtensions.Net.CertificatePolicy {
-        public class TrustAll : System.Net.ICertificatePolicy {
-            public TrustAll()
-            {
+            public class TrustAll : System.Net.ICertificatePolicy {
+                public TrustAll()
+                {
+                }
+                public bool CheckValidationResult(System.Net.ServicePoint sp,
+                                                    System.Security.Cryptography.X509Certificates.X509Certificate cert, 
+                                                    System.Net.WebRequest req, int problem)
+                {
+                    return true;
+                }
             }
-            public bool CheckValidationResult(System.Net.ServicePoint sp,
-                                                System.Security.Cryptography.X509Certificates.X509Certificate cert, 
-                                                System.Net.WebRequest req, int problem)
-            {
-                return true;
-            }
-        }
         }
 '@ 
-    $TAResults=$Provider.CompileAssemblyFromSource($Params,$TASource)
-    $TAAssembly=$TAResults.CompiledAssembly
+
+    Add-Type -TypeDefinition $TASource -ReferencedAssemblies "System.DLL"
 
     ## We now create an instance of the TrustAll and attach it to the ServicePointManager
-    $TrustAll=$TAAssembly.CreateInstance("Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll")
+    $TrustAll=[Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll]::new()
     [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
 }
 
@@ -742,7 +822,7 @@ function ThrottledFolderBind()
 
     try
     {
-
+        ApplyEWSOauthCredentials
         $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
         if (!($folder -eq $null))
         {
@@ -756,6 +836,7 @@ function ThrottledFolderBind()
     {
         try
         {
+            ApplyEWSOauthCredentials
             $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
             if (!($folder -eq $null))
             {
