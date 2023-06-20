@@ -128,7 +128,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, changes will be made to the mailbox (but actions that would be taken will be logged)")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.0.5"
+$script:ScriptVersion = "1.0.6"
 
 # Define our functions
 
@@ -267,7 +267,7 @@ function LoadLibraries()
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
-    if (!script:msalApiLoaded)
+    if (!$script:msalApiLoaded)
     {
         $msalLocation = @()
         $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
@@ -289,7 +289,13 @@ function GetTokenWithCertificate
     $authResult = $acquire.ExecuteAsync().Result
     $script:oauthToken = $authResult
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    $Impersonate = $true
+    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    $script:Impersonate = $true
+
+    if ($DebugTokenRenewal)
+    {
+        $global:certAuthResult = $authResult
+    }
 }
 
 function GetTokenViaCode
@@ -308,12 +314,12 @@ function GetTokenViaCode
     $codeEnd = $authcode.IndexOf("&session_state=")
     if ($codeEnd -gt 0)
     {
-        $authcode = $authcode.Substring(0, $codeEnd)
+        $script:AuthCode = $authcode.Substring(0, $codeEnd)
     }
     Write-Verbose "Using auth code: $authcode"
 
     # Acquire token (using the auth code)
-    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$script:AuthCode;redirect_uri=$OAuthRedirectUri}
     try
     {
         $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
@@ -323,6 +329,30 @@ function GetTokenViaCode
     catch
     {
         Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function RenewOAuthToken
+{
+    # Renew the delegate token (original token was obtained by auth code, but we can now renew using the access token)
+    if (!$script:oAuthToken)
+    {
+        # We don't have a token, so we can't renew
+        GetTokenViaCode
+        return
+    }
+
+    $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oauthToken.refresh_token}
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to renew OAuth token (auth code grant)" -ForegroundColor Red
         exit # Failed to obtain a token
     }
 }
@@ -347,7 +377,7 @@ function GetTokenWithKey
         Write-Host "Failed to obtain OAuth token: $Error" -ForegroundColor Red
         exit # Failed to obtain a token
     }
-    $Impersonate = $true
+    $script:Impersonate = $true
 }
 
 function GetOAuthCredentials
@@ -367,22 +397,27 @@ function GetOAuthCredentials
             $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
             return $exchangeCredentials
         }
-
         # Token needs renewing
-
     }
 
-    if (![String]::IsNullOrEmpty($OAuthSecretKey))
-    {
-        GetTokenWithKey
-    }
-    elseif ($OAuthCertificate -ne $null)
+    if ($OAuthCertificate -ne $null)
     {
         GetTokenWithCertificate
     }
+    elseif (![String]::IsNullOrEmpty($OAuthSecretKey))
+    {
+        GetTokenWithKey
+    }
     else
     {
-        GetTokenViaCode
+        if ($RenewToken)
+        {
+            RenewOAuthToken
+        }
+        else
+        {
+            GetTokenViaCode
+        }
     }
 
     # If we get here we have a valid token
@@ -390,42 +425,116 @@ function GetOAuthCredentials
     return $exchangeCredentials
 }
 
+$script:oAuthDebugStop = $false
 function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
-    if ( $script:authenticationResult -eq $null ) { return }
+    if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
-    if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+
+    
+    if ($DebugTokenRenewal -and $script:oauthToken)
+    {
+        # When debugging tokens, we stop after on every other EWS call and wait for the token to expire
+        if ($script:oAuthDebugStop)
+        {
+            # Wait until token expires (we do this after every call when debugging OAuth)
+            # Access tokens can't be revoked, but a policy can be assigned to reduce lifetime to 10 minutes: https://learn.microsoft.com/en-us/graph/api/resources/tokenlifetimepolicy?view=graph-rest-1.0
+            if ($OAuthCertificate -ne $null)
+            {
+                $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+            }
+            else
+            {
+                $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
+            }
+            $timeUntilExpiry = $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            if ($timeUntilExpiry -gt 0)
+            {
+                Write-Host "Waiting until token has expired: $tokenExpire (UTC)" -ForegroundColor Cyan
+                Start-Sleep -Seconds $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            }
+            Write-Host "Token expired, continuing..." -ForegroundColor Cyan
+            $oAuthDebugStop = $false
+        }
+        else
+        {
+            $script:oAuthDebugStop = $true
+        }
+    }
+    
+    if ($OAuthCertificate -ne $null)
+    {
+        if ( [DateTime]::UtcNow -ge $script:oauthToken.ExpiresOn.UtcDateTime) { return }
+    }
+    elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
-    LogVerbose("OAuth access token invalid, attempting to renew")
+    LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
-    { 
-        Log "OAuth Token renewal failed"
-        exit # We no longer have access to the mailbox, so we stop here
+
+    if ($OAuthCertificate -ne $null)
+    {
+        $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+        if ( [DateTime]::UtcNow -ge $tokenExpire)
+        {
+            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed (certificate auth)"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+    }
+    else
+    {
+        if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
+        { 
+            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+        $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
     }
 
-    Log "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
-            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($exchangeCredentials)
+            $service.Credentials = $exchangeCredentials
         }
-        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
+    }
+
+    if ($DebugTokenRenewal)
+    {
+        $global:oAuthTokenDebug = $script:oauthToken
     }
 }
 
-Function LoadEWSManagedAPI()
+Function LoadEWSManagedAPI
 {
 	# Find and load the managed API
     $ewsApiLocation = @()
     $ewsApiLoaded = $(LoadLibraries -searchProgramFiles $true -dllNames @("Microsoft.Exchange.WebServices.dll") -dllLocations ([ref]$ewsApiLocation))
     ReportError "LoadEWSManagedAPI"
+
+    if (!$ewsApiLoaded)
+    {
+        # Failed to load the EWS API, so try to install it from Nuget
+        $ewsapi = Find-Package "Exchange.WebServices.Managed.Api"
+        if ($ewsapi.Entities.Name.Equals("Microsoft"))
+        {
+	        # We have found EWS API package, so install as current user (confirm with user first)
+	        Write-Host "EWS Managed API is not installed, but is available from Nuget.  Install now for current user (required for this script to continue)? (Y/n)" -ForegroundColor Yellow
+	        $response = Read-Host
+	        if ( $response.ToLower().Equals("y") )
+	        {
+		        Install-Package $ewsapi -Scope CurrentUser -Force
+                $ewsApiLoaded = $(LoadLibraries -searchProgramFiles $true -dllNames @("Microsoft.Exchange.WebServices.dll") -dllLocations ([ref]$ewsApiLocation))
+                ReportError "LoadEWSManagedAPI"
+	        }
+        }
+    }
+
     if ($ewsApiLoaded)
     {
         if ($ewsApiLocation[0])
@@ -439,6 +548,7 @@ Function LoadEWSManagedAPI()
             Exit
         }
     }
+
     return $ewsApiLoaded
 }
 
@@ -451,6 +561,7 @@ Function CurrentUserPrimarySmtpAddress()
     if ($result -ne $null)
     {
         $mail = $result.Properties["mail"]
+        LogDebug "Current user's SMTP address is: $mail"
         return $mail
     }
     return $null
@@ -458,20 +569,13 @@ Function CurrentUserPrimarySmtpAddress()
 
 Function TrustAllCerts()
 {
-    # Trust all SSL certificates
-    $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-    $Compiler=$Provider.CreateCompiler()
-    $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-    $Params.GenerateExecutable=$False
-    $Params.GenerateInMemory=$True
-    $Params.IncludeDebugInformation=$False
-    $Params.ReferencedAssemblies.Add("System.DLL") | Out-Null
+    # Implement call-back to override certificate handling (and accept all)
 
     $TASource=@'
         namespace Local.ToolkitExtensions.Net.CertificatePolicy {
             public class TrustAll : System.Net.ICertificatePolicy {
                 public TrustAll()
-                { 
+                {
                 }
                 public bool CheckValidationResult(System.Net.ServicePoint sp,
                                                     System.Security.Cryptography.X509Certificates.X509Certificate cert, 
@@ -482,32 +586,32 @@ Function TrustAllCerts()
             }
         }
 '@ 
-    $TAResults=$Provider.CompileAssemblyFromSource($Params,$TASource)
-    $TAAssembly=$TAResults.CompiledAssembly
+
+    Add-Type -TypeDefinition $TASource -ReferencedAssemblies "System.DLL"
 
     ## We now create an instance of the TrustAll and attach it to the ServicePointManager
-    $TrustAll=$TAAssembly.CreateInstance("Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll")
+    $TrustAll=[Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll]::new()
     [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
 }
 
 Function CreateTraceListener($service)
 {
     # Create trace listener to capture EWS conversation (useful for debugging)
+
+    if ([String]::IsNullOrEmpty($EWSManagedApiPath))
+    {
+        Log "Managed API path missing; unable to create tracer" Red
+        Exit
+    }
+
     if ($script:Tracer -eq $null)
     {
-        $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-        $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-        $Params.GenerateExecutable=$False
-        $Params.GenerateInMemory=$True
-        $Params.IncludeDebugInformation=$False
-	    $Params.ReferencedAssemblies.Add("System.dll") | Out-Null
-        $Params.ReferencedAssemblies.Add($EWSManagedApiPath) | Out-Null
-
-        $traceFileForCode = $TraceFile.Replace("\", "\\")
+        $traceFileForCode = ""
 
         if (![String]::IsNullOrEmpty($TraceFile))
         {
-            LogVerbose "Tracing to: $TraceFile"
+            Log "Tracing to: $TraceFile"
+            $traceFileForCode = $traceFile.Replace("\", "\\")
         }
 
         $TraceListenerClass = @"
@@ -517,77 +621,79 @@ Function CreateTraceListener($service)
 		    using System.Threading;
 		    using Microsoft.Exchange.WebServices.Data;
 		
-            namespace TraceListener {
-		        class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
-		        {
-			        private StreamWriter _traceStream = null;
-                    private string _lastResponse = String.Empty;
+		    public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+		    {
+			    private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
 
-			        public EWSTracer()
-			        {
-				        try
-				        {
-					        _traceStream = File.AppendText("$traceFileForCode");
-				        }
-				        catch { }
-			        }
-
-			        ~EWSTracer()
-			        {
-                        Close();
-			        }
-
-                    public void Close()
-			        {
-				        try
-				        {
-					        _traceStream.Flush();
-					        _traceStream.Close();
-				        }
-				        catch { }
-			        }
-
-
-			        public void Trace(string traceType, string traceMessage)
-			        {
-                        if ( traceType.Equals("EwsResponse") )
-                            _lastResponse = traceMessage;
-
-                        if ( traceType.Equals("EwsRequest") )
-                            _lastResponse = String.Empty;
-
-				        if (_traceStream == null)
-					        return;
-
-				        lock (this)
-				        {
-					        try
-					        {
-						        _traceStream.WriteLine(traceMessage);
-						        _traceStream.Flush();
-					        }
-					        catch { }
-				        }
-			        }
-
-                    public string LastResponse
-                    {
-                        get { return _lastResponse; }
-                    }
-		        }
-            }
+			    public EWSTracer()
+			    {
 "@
-
-        $TraceCompilation=$Provider.CompileAssemblyFromSource($Params,$TraceListenerClass)
-        $TraceAssembly=$TraceCompilation.CompiledAssembly
-        $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
+    if (![String]::IsNullOrEmpty(($traceFileForCode)))
+    {
+        $TraceListenerClass = 
+@"
+$TraceListenerClass
+				    try
+				    {
+					    _traceStream = File.AppendText("$traceFileForCode");
+				    }
+				    catch { }
+"@
     }
 
-    # Attach the trace listener to the Exchange service
-    $service.TraceListener = $script:Tracer
+        $TraceListenerClass = 
+@"
+$TraceListenerClass			        }
+
+			    ~EWSTracer()
+			    {
+                    Close();
+			    }
+
+                public void Close()
+			    {
+				    try
+				    {
+					    _traceStream.Flush();
+					    _traceStream.Close();
+				    }
+				    catch { }
+			    }
+
+
+			    public void Trace(string traceType, string traceMessage)
+			    {
+                    if ( traceType.Equals("EwsResponse") )
+                        _lastResponse = traceMessage;
+
+                    if ( traceType.Equals("EwsRequest") )
+                        _lastResponse = String.Empty;
+
+				    if (_traceStream == null)
+					    return;
+
+					try
+					{
+						_traceStream.WriteLine(traceMessage);
+						_traceStream.Flush();
+					}
+					catch { }
+			    }
+
+                public string LastResponse
+                {
+                    get { return _lastResponse; }
+                }
+		    }
+"@
+
+        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        $script:Tracer=[EWSTracer]::new()
+    }
 }
 
-function CreateService($smtpAddress)
+function CreateService($smtpAddress, $impersonatedAddress = "")
 {
     # Creates and returns an ExchangeService object to be used to access mailboxes
 
@@ -602,7 +708,7 @@ function CreateService($smtpAddress)
     }
 
     # Create new service
-    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2016)
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
 
     # Do we need to use OAuth?
     if ($OAuth)
@@ -664,18 +770,30 @@ function CreateService($smtpAddress)
     	}
     }
  
+    if ([String]::IsNullOrEmpty($impersonatedAddress))
+    {
+        $impersonatedAddress = $smtpAddress
+    }
     $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
     if ($Impersonate)
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
+		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
 	}
 
     # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
     if (![String]::IsNullOrEmpty($EWSManagedApiPath))
     {
         CreateTraceListener $exchangeService
-        $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
-        $exchangeService.TraceEnabled = $True
+        if ($script:Tracer)
+        {
+            $exchangeService.TraceListener = $script:Tracer
+            $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+            $exchangeService.TraceEnabled = $True
+        }
+        else
+        {
+            Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
+        }
     }
 
     $script:services.Add($smtpAddress, $exchangeService)
@@ -1273,7 +1391,16 @@ Function AddFolderProperties($folder)
             {
                 if ($propType -eq [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary)
                 {
-                    [byte[]]$bytes = HexStringToByteArray $value
+                    [byte[]]$bytes = $null
+                    if ($value.GetType().Name.Equals("Byte[]"))
+                    {
+                        $bytes = $value
+                    }
+                    else
+                    {
+                        # Parameter is binary but not byte array - assume it is hex string and convert
+                        $bytes = HexStringToByteArray $value
+                    }
                     $script:addFolderPropsEws.Add($propdef, $bytes)
                 }
                 else
