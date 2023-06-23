@@ -29,6 +29,12 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Organizer of the appointment(s) being searched")]
     [string]$Organizer,
 
+    [Parameter(Mandatory=$False,HelpMessage="Location of the appointment(s) being searched")]
+    [string]$Location,
+
+    [Parameter(Mandatory=$False,HelpMessage="Category of the appointment(s) being searched")]
+    [string]$Category,
+
     [Parameter(Mandatory=$False,HelpMessage="Start date for the appointment(s) must be after this date")]
     [string]$StartsAfter,
     
@@ -141,7 +147,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
     [string]$TraceFile
 )
-$script:ScriptVersion = "1.2.0"
+$script:ScriptVersion = "1.2.1"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -987,6 +993,7 @@ function LoadItem( $item )
     $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::Recurrence)
     $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::ModifiedOccurrences)
     $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::DeletedOccurrences)
+    $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::Location)
 
     ApplyEWSOAuthCredentials
     $item.Load($propSet)
@@ -1004,15 +1011,14 @@ function ExportTime($timeValue)
 
 function LogToCSV()
 {
-    if ([String]::IsNullOrEmpty($ExportCSV)) { return }
-
     if (-not (Test-Path $ExportCSV))
     {
         # File doesn't exist, so write CSV headers
-        if ($script:CSVHeaders)
+        if ( $script:CSVHeaders -eq $Null )
         {
-            $script:CSVHeaders | Out-File -FilePath $ExportCSV
+            $script:CSVHeaders = """Mailbox"",""Subject"",""Sent"",""Received"",""Sender"",""Organizer"",""Start"",""End"",""IsAllDay"",""AppointmentType"""
         }
+        $script:CSVHeaders | Out-File -FilePath $ExportCSV
     }
 
     $args | Out-File -FilePath $ExportCSV -Append
@@ -1021,19 +1027,24 @@ function LogToCSV()
 function ProcessItem( $item )
 {
 	# We have found an item, so this function handles any processing
-    LoadItem $item
 
-    if ( $script:CSVHeaders -eq $Null )
+    if (![String]::IsNullOrEmpty($ExportCSV))
     {
-        $script:CSVHeaders = """Mailbox"",""Subject"",""Sent"",""Received"",""Sender"",""Organizer"",""Start"",""End"",""IsAllDay"",""AppointmentType"""
+        LoadItem $item
+	    LogToCSV "`"$Mailbox`",`"$($item.Subject)`",`"$(ExportTime($item.DateTimeSent))`",`"$(ExportTime($item.DateTimeReceived))`",`"$($item.Sender)`",`"$($item.Organizer)`",`"$((ExportTime($item.Start)))`",`"$((ExportTime($item.End)))`",`"$($item.IsAllDayEvent)`",`"$($item.AppointmentType.ToString())`""
     }
 
-	LogToCSV "`"$Mailbox`",`"$($item.Subject)`",`"$(ExportTime($item.DateTimeSent))`",`"$(ExportTime($item.DateTimeReceived))`",`"$($item.Sender)`",`"$($item.Organizer)`",`"$((ExportTime($item.Start)))`",`"$((ExportTime($item.End)))`",`"$($item.IsAllDayEvent)`",`"$($item.AppointmentType.ToString())`""
+    if (!$Delete -and [String]::IsNullOrEmpty($MoveToFolder))
+    {
+        # No actions are specified, so we just log this appointment
+        Log "$($item.Start) $($item.Subject)"
+        return
+    }
 
 	# Add the item to our list of matches (for batch processing later)
     if ( $script:matches.ContainsKey($item.Id.UniqueId) )
     {
-        LogVerbose "Item not added to match list as matching Id already present"
+        Log "Item not added to match list as matching Id already present"
         if ($script:matches[$item.Id.UniqueId].Subject -ne $item.Subject)
         {
             Log "Subject of matching item: $($script:matches[$item.Id.UniqueId].Subject)" Red
@@ -1043,6 +1054,7 @@ function ProcessItem( $item )
     {
         $script:matches.Add($item.Id.UniqueId, $item)
 		LogVerbose "Item added to match list: $($item.Subject)"
+
     }
 }
 
@@ -1128,11 +1140,16 @@ function SearchForAppointments($Folder)
     if ($HasExceptions -gt -1)
     {
         # Only recurring appointments can have exceptions, so we add a filter for that and then check exceptions
-        #$PidLidIsRecurring = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x8223, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Boolean)
         $PidLidIsRecurring = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition([Microsoft.Exchange.WebServices.Data.DefaultExtendedPropertySet]::Appointment,0x8223, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Boolean)
         $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo($PidLidIsRecurring, $true)
-        #$filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::IsRecurring, $true)
-
+    }
+    if (![String]::IsNullOrEmpty($Location))
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::Location, $Location)
+    }
+    if (![String]::IsNullOrEmpty($Category))
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+ContainsSubstring([Microsoft.Exchange.WebServices.Data.ItemSchema]::Categories, $Category)
     }
 
     $view.PropertySet = $propset
@@ -1299,6 +1316,7 @@ function ProcessBatches()
 	$itemIdType = [Type] $itemId.GetType()
 	$baseList = [System.Collections.Generic.List``1]
 	$genericItemIdList = $baseList.MakeGenericType(@($itemIdType))
+    $batchSize = 100
 
     if ( ![String]::IsNullOrEmpty($MoveToFolder) )
     {
@@ -1314,7 +1332,7 @@ function ProcessBatches()
             Log "Moving: $($item.Subject), $($item.Start) - $($item.End)" White
 		    $moveIds.Add($item.Id)
             $i--
-		    if ($moveIds.Count -ge 500)
+		    if ($moveIds.Count -ge $batchSize)
 		    {
 			    # Send the move request
                 LogVerbose "Sending request to move $($deleteIds.Count) items ($i remaining)"
@@ -1340,7 +1358,7 @@ function ProcessBatches()
             Log "Deleting: $($item.Subject), $($item.Start) - $($item.End)" White
 		    $deleteIds.Add($item.Id)
             $i--
-		    if ($deleteIds.Count -ge 500)
+		    if ($deleteIds.Count -ge $batchSize)
 		    {
 			    # Send the delete request
                 LogVerbose "Sending request to delete $($deleteIds.Count) items ($i remaining).  SendCancellationsMode: $SendCancellationsMode"
