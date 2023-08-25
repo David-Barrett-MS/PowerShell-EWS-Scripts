@@ -12,9 +12,6 @@
 # SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
-# TODO:
-# - Add advanced property filtering
-
 param (
     [Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed.")]
     [ValidateNotNullOrEmpty()]
@@ -134,7 +131,7 @@ param (
     [switch]$WhatIf
 	
 )
-$script:ScriptVersion = "1.2.8"
+$script:ScriptVersion = "1.2.9"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -418,6 +415,39 @@ function GetTokenWithKey
     $script:Impersonate = $true
 }
 
+function JWTToPSObject
+{
+    param([Parameter(Mandatory=$true)][string]$token)
+
+    $tokenheader = $token.Split(".")[0].Replace('-', '+').Replace('_', '/')
+    while ($tokenheader.Length % 4) { $tokenheader = "$tokenheader=" }    
+    $tokenHeaderObject = [System.Text.Encoding]::UTF8.GetString([system.convert]::FromBase64String($tokenheader)) | ConvertFrom-Json
+
+    $tokenPayload = $token.Split(".")[1].Replace('-', '+').Replace('_', '/')
+    while ($tokenPayload.Length % 4) { $tokenPayload = "$tokenPayload=" }
+    $tokenByteArray = [System.Convert]::FromBase64String($tokenPayload)
+    $tokenArray = [System.Text.Encoding]::UTF8.GetString($tokenByteArray)
+    $tokenObject = $tokenArray | ConvertFrom-Json
+    return $tokenObject
+}
+
+function LogOAuthTokenInfo
+{
+    if ($global:OAuthResponse -eq $null)
+    {
+        Log "No OAuth token obtained." Red
+        return
+    }
+
+    $global:idTokenDecoded = JWTToPSObject($global:OAuthResponse.id_token)
+    Log "OAuth ID Token (`$idTokenDecoded):" Yellow
+    Log $global:idTokenDecoded Yellow
+
+    $global:accessTokenDecoded = JWTToPSObject($global:OAuthResponse.access_token)
+    Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
+    Log $global:accessTokenDecoded Yellow
+}
+
 function GetOAuthCredentials
 {
     # Obtain OAuth token for accessing mailbox
@@ -450,6 +480,15 @@ function GetOAuthCredentials
     {
         GetTokenViaCode
     }
+    if ($OAuthDebug)
+    {
+        $global:OAuthResponse = $script:oAuthToken
+        $global:OAuthAccessToken = $script:oAuthAccessToken
+        LogVerbose "`$OAuthAccessToken:"
+        LogVerbose $global:OAuthAccessToken
+        LogOAuthTokenInfo
+    }
+    
 
     # If we get here we have a valid token
     $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
