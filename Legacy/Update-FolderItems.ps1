@@ -129,10 +129,11 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="The number of items that will be requested in a single GetItem call.  Reduce this significantly (e.g. 10) if items are large and need to be retrieved.")]
     $GetItemBatchSize = 500,
     
+#>** AUTHENTICATION PARAMETERS START ** #
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
-    [alias("Credentials")]
-    [System.Management.Automation.PSCredential]$Credential,
-				
+    [alias("Credential")]
+    [System.Management.Automation.PSCredential]$Credentials,
+	
     [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available.")]
     [switch]$OAuth,
 
@@ -153,7 +154,11 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     $OAuthCertificate = $null,
-	
+
+    [Parameter(Mandatory=$False,HelpMessage="Enables token debugging (for development purposes - do not use)")]	
+    [switch]$DebugTokenRenewal,
+#>** AUTHENTICATION PARAMETERS END ** #
+
     [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
     [switch]$Impersonate,
 	
@@ -187,7 +192,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.3.1"
+$script:ScriptVersion = "1.3.2"
 
 if ($ForceTLS12)
 {
@@ -368,6 +373,7 @@ function LoadLibraries()
     return $true
 }
 
+#>** OAUTH FUNCTIONS START ** #
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
@@ -398,35 +404,26 @@ function GetTokenWithCertificate
 
 function GetTokenViaCode
 {
-    if ($script:oAuthToken -eq $null)
-    {
-        # We don't yet have a token, so need to acquire auth code
-        $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
-        Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
-        Start-Process $authUrl
+    # Acquire auth code (needed to request token)
+    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+    Start-Process $authUrl
 
-        $authcode = Read-Host "Auth code"
-        $codeStart = $authcode.IndexOf("?code=")
-        if ($codeStart -gt 0)
-        {
-            $authcode = $authcode.Substring($codeStart+6)
-        }
-        $codeEnd = $authcode.IndexOf("&session_state=")
-        if ($codeEnd -gt 0)
-        {
-            $authcode = $authcode.Substring(0, $codeEnd)
-        }
-        Write-Verbose "Using auth code: $authcode"
-        # Use the auth code to obtain our access and refresh token
-        $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
-    }
-    else
+    $authcode = Read-Host "Auth code"
+    $codeStart = $authcode.IndexOf("?code=")
+    if ($codeStart -gt 0)
     {
-        # This is a renewal, so we use the refresh token previously acquired (no need for auth code)
-        $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oAuthToken.refresh_token}
+        $authcode = $authcode.Substring($codeStart+6)
     }
+    $codeEnd = $authcode.IndexOf("&session_state=")
+    if ($codeEnd -gt 0)
+    {
+        $script:AuthCode = $authcode.Substring(0, $codeEnd)
+    }
+    Write-Verbose "Using auth code: $authcode"
 
-    # Acquire token
+    # Acquire token (using the auth code)
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$script:AuthCode;redirect_uri=$OAuthRedirectUri}
     try
     {
         $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
@@ -435,7 +432,31 @@ function GetTokenViaCode
     }
     catch
     {
-        Log "Failed to obtain OAuth token" Red
+        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function RenewOAuthToken
+{
+    # Renew the delegate token (original token was obtained by auth code, but we can now renew using the access token)
+    if (!$script:oAuthToken)
+    {
+        # We don't have a token, so we can't renew
+        GetTokenViaCode
+        return
+    }
+
+    $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oauthToken.refresh_token}
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to renew OAuth token (auth code grant)" -ForegroundColor Red
         exit # Failed to obtain a token
     }
 }
@@ -477,6 +498,46 @@ function GetTokenWithKey
     $script:Impersonate = $true
 }
 
+function JWTToPSObject
+{
+    param([Parameter(Mandatory=$true)][string]$token)
+
+    $tokenheader = $token.Split(".")[0].Replace('-', '+').Replace('_', '/')
+    while ($tokenheader.Length % 4) { $tokenheader = "$tokenheader=" }    
+    $tokenHeaderObject = [System.Text.Encoding]::UTF8.GetString([system.convert]::FromBase64String($tokenheader)) | ConvertFrom-Json
+
+    $tokenPayload = $token.Split(".")[1].Replace('-', '+').Replace('_', '/')
+    while ($tokenPayload.Length % 4) { $tokenPayload = "$tokenPayload=" }
+    $tokenByteArray = [System.Convert]::FromBase64String($tokenPayload)
+    $tokenArray = [System.Text.Encoding]::UTF8.GetString($tokenByteArray)
+    $tokenObject = $tokenArray | ConvertFrom-Json
+    return $tokenObject
+}
+
+function LogOAuthTokenInfo
+{
+    if ($global:OAuthResponse -eq $null)
+    {
+        Log "No OAuth token obtained." Red
+        return
+    }
+
+    if ([String]::IsNullOrEmpty($global:OAuthResponse.id_token))
+    {
+        Log "OAuth ID Token not present" Yellow
+    }
+    else
+    {
+        $global:idTokenDecoded = JWTToPSObject($global:OAuthResponse.id_token)
+        Log "OAuth ID Token (`$idTokenDecoded):" Yellow
+        Log $global:idTokenDecoded Yellow
+    }
+
+    $global:accessTokenDecoded = JWTToPSObject($global:OAuthResponse.access_token)
+    Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
+    Log $global:accessTokenDecoded Yellow
+}
+
 function GetOAuthCredentials
 {
     # Obtain OAuth token for accessing mailbox
@@ -485,7 +546,7 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ($script:oauthToken -ne $null -and -not $RenewToken)
+    if ($script:oauthToken -ne $null)
     {
         # We already have a token
         if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
@@ -494,8 +555,8 @@ function GetOAuthCredentials
             $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
             return $exchangeCredentials
         }
+        # Token needs renewing
     }
-    # Token needs renewing
 
     if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
@@ -507,34 +568,100 @@ function GetOAuthCredentials
     }
     else
     {
-        GetTokenViaCode
+        if ($RenewToken)
+        {
+            RenewOAuthToken
+        }
+        else
+        {
+            GetTokenViaCode
+        }
     }
+    if ($OAuthDebug)
+    {
+        $global:OAuthResponse = $script:oAuthToken
+        $global:OAuthAccessToken = $script:oAuthAccessToken
+        LogVerbose "`$OAuthAccessToken:"
+        LogVerbose $global:OAuthAccessToken
+        LogOAuthTokenInfo
+    }
+    
 
     # If we get here we have a valid token
     $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
     return $exchangeCredentials
 }
 
+$script:oAuthDebugStop = $false
 function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
     if ( -not $OAuth ) { return }
     if ( $script:services -eq $null ) { return }
-    if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
+
+    
+    if ($DebugTokenRenewal -and $script:oauthToken)
+    {
+        # When debugging tokens, we stop after on every other EWS call and wait for the token to expire
+        if ($script:oAuthDebugStop)
+        {
+            # Wait until token expires (we do this after every call when debugging OAuth)
+            # Access tokens can't be revoked, but a policy can be assigned to reduce lifetime to 10 minutes: https://learn.microsoft.com/en-us/graph/api/resources/tokenlifetimepolicy?view=graph-rest-1.0
+            if ($OAuthCertificate -ne $null)
+            {
+                $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+            }
+            else
+            {
+                $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
+            }
+            $timeUntilExpiry = $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            if ($timeUntilExpiry -gt 0)
+            {
+                Write-Host "Waiting until token has expired: $tokenExpire (UTC)" -ForegroundColor Cyan
+                Start-Sleep -Seconds $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            }
+            Write-Host "Token expired, continuing..." -ForegroundColor Cyan
+            $oAuthDebugStop = $false
+        }
+        else
+        {
+            $script:oAuthDebugStop = $true
+        }
+    }
+    
+    if ($OAuthCertificate -ne $null)
+    {
+        if ( [DateTime]::UtcNow -ge $script:oauthToken.ExpiresOn.UtcDateTime) { return }
+    }
+    elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
-    LogVerbose("OAuth access token invalid, attempting to renew")
+    LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
-    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -le [DateTime]::Now )
-    { 
-        Log "OAuth Token renewal failed" Red
-        exit # We no longer have access to the mailbox, so we stop here
+
+    if ($OAuthCertificate -ne $null)
+    {
+        $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+        if ( [DateTime]::UtcNow -ge $tokenExpire)
+        {
+            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed (certificate auth)"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+    }
+    else
+    {
+        if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
+        { 
+            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+        $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
     }
 
-    Log "OAuth token successfully renewed; new expiry: $($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in))"
+    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
@@ -543,7 +670,13 @@ function ApplyEWSOAuthCredentials
         }
         LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
+
+    if ($DebugTokenRenewal)
+    {
+        $global:oAuthTokenDebug = $script:oauthToken
+    }
 }
+#>** OAUTH FUNCTIONS END ** #
 
 Function LoadEWSManagedAPI
 {
@@ -2159,11 +2292,6 @@ Function ProcessItem()
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
     if ( -not (ItemMatchesRecipientRequirements($item)) ) { return }
     if ( -not (ItemMatchesDateRequirement($item)) ) { return }
-
-    if ($OAuthDebug)
-    {
-        Read-Host "Token expires at $($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)). Press <ENTER> to continue" | out-null
-    }
 
     LogVerbose "Processing item: $($item.Subject)"
     $script:itemsMatched++
