@@ -126,21 +126,24 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this is set to any value higher than 0, then the script will go into -WhatIf mode once that many items have been processed.")]
     $MaximumNumberOfItemsToProcess = 0,
 
+    [Parameter(Mandatory=$False,HelpMessage="If set, the script will stop processing further items once MaximumNumberOfItemsToProcess limit is reached.")]
+    [switch]$StopAfterMaximumNumberOfItemsProcessed,
+
     [Parameter(Mandatory=$False,HelpMessage="The number of items that will be requested in a single GetItem call.  Reduce this significantly (e.g. 10) if items are large and need to be retrieved.")]
     $GetItemBatchSize = 500,
     
-#>** AUTHENTICATION PARAMETERS START ** #
+#>** EWS/OAUTH PARAMETERS START **#
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
 	
-    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available.")]
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for Office 365)")]
     [switch]$OAuth,
 
     [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
     [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 
-    [Parameter(Mandatory=$False,HelpMessage="The tenant Id of the tenant being accessed.")]
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id (application must be registered in the same tenant being accessed).")]
     [string]$OAuthTenantId = "",
 
     [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
@@ -149,15 +152,14 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     [string]$OAuthSecretKey = "",
 
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
+    $OAuthCertificate = $null,
+
     [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
     [switch]$OAuthDebug,
 
-    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
-    $OAuthCertificate = $null,
-
-    [Parameter(Mandatory=$False,HelpMessage="Enables token debugging (for development purposes - do not use)")]	
-    [switch]$DebugTokenRenewal,
-#>** AUTHENTICATION PARAMETERS END ** #
+    [Parameter(Mandatory=$False,HelpMessage="A value greater than 0 enables token debugging (specify total number of token renewals to debug).")]	
+    $DebugTokenRenewal = 0,
 
     [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
     [switch]$Impersonate,
@@ -179,20 +181,29 @@ param (
 	
     [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing AutoDiscover.")]	
     [switch]$AllowInsecureRedirection,
-	
-    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified.")]	
-    [string]$LogFile = "",
 
     [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file.")]	
     [string]$TraceFile,
+#>** EWS/OAUTH PARAMETERS END **#
+	
+#>** LOGGING PARAMETERS START **#
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified.")]	
+    [string]$LogFile = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
+    [switch]$VerboseLogFile,
+
+    [Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
+    [switch]$DebugLogFile,
 
     [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled).")]
     [switch]$FastFileLogging,
+#>** LOGGING PARAMETERS END **#
 
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.3.2"
+$script:ScriptVersion = "1.3.3"
 
 if ($ForceTLS12)
 {
@@ -206,6 +217,7 @@ else
 
 # Define our functions
 
+#>** LOGGING FUNCTIONS START **#
 Function LogToFile([string]$Details)
 {
 	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
@@ -224,15 +236,10 @@ Function UpdateDetailsWithCallingMethod([string]$Details)
     return "$timeInfo $Details"
 }
 
-Function Log([string]$Details, [ConsoleColor]$Colour)
+Function LogToFile([string]$logInfo)
 {
-    if ($Colour -eq $null)
-    {
-        $Colour = [ConsoleColor]::White
-    }
-    $Details = UpdateDetailsWithCallingMethod( $Details )
-    Write-Host $Details -ForegroundColor $Colour
-
+    if ( [String]::IsNullOrEmpty($LogFile) ) { return }
+    
     if ($FastFileLogging)
     {
         # Writing the log file using a FileStream (that we keep open) is significantly faster than using out-file (which opens, writes, then closes the file each time it is called)
@@ -269,21 +276,32 @@ Function Log([string]$Details, [ConsoleColor]$Colour)
         }
     }
 
+	$logInfo | Out-File $LogFile -Append
+}
+
+Function Log([string]$Details, [ConsoleColor]$Colour)
+{
+    if ($Colour -eq $null)
+    {
+        $Colour = [ConsoleColor]::White
+    }
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Host $Details -ForegroundColor $Colour
     LogToFile $Details
 }
 Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" Green
 
 Function LogVerbose([string]$Details)
 {
-    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
+    if ( !$VerboseLogFile -and !$DebugLogFile -and ($VerbosePreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
 }
 
 Function LogDebug([string]$Details)
 {
-    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
+    if (!$DebugLogFile -and ($DebugPreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
 }
 
@@ -317,7 +335,10 @@ Function ReportError($Context)
     # Reports error without returning the result
     ErrorReported $Context | Out-Null
 }
+#>** LOGGING FUNCTIONS END **#
 
+
+#>** EWS/OAUTH FUNCTIONS START **#
 function LoadLibraries()
 {
     param (
@@ -373,7 +394,6 @@ function LoadLibraries()
     return $true
 }
 
-#>** OAUTH FUNCTIONS START ** #
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
@@ -406,35 +426,44 @@ function GetTokenViaCode
 {
     # Acquire auth code (needed to request token)
     $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
-    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+    Write-Host "Please complete log-in via the web browser, and then copy the redirect URL (including auth code) to the clipboard to continue" -ForegroundColor Green
+    Set-Clipboard -Value "Waiting for auth code"
     Start-Process $authUrl
 
-    $authcode = Read-Host "Auth code"
+    do
+    {
+        $authcode = Get-Clipboard
+        Start-Sleep -Milliseconds 250
+    } while ($authCode -eq "Waiting for auth code")
+
     $codeStart = $authcode.IndexOf("?code=")
     if ($codeStart -gt 0)
     {
         $authcode = $authcode.Substring($codeStart+6)
+        $codeEnd = $authcode.IndexOf("&session_state=")
+        if ($codeEnd -gt 0)
+        {
+            $authcode = $authcode.Substring(0, $codeEnd)
+        }
+        Write-Verbose "Using auth code: $authcode"
     }
-    $codeEnd = $authcode.IndexOf("&session_state=")
-    if ($codeEnd -gt 0)
+    else
     {
-        $script:AuthCode = $authcode.Substring(0, $codeEnd)
+        throw "Failed to obtain Auth code from clipboard"
     }
-    Write-Verbose "Using auth code: $authcode"
 
     # Acquire token (using the auth code)
-    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$script:AuthCode;redirect_uri=$OAuthRedirectUri}
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
     try
     {
         $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
         $script:oAuthAccessToken = $script:oAuthToken.access_token
         $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        return
     }
-    catch
-    {
-        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
-        exit # Failed to obtain a token
-    }
+    catch {}
+
+    throw "Failed to obtain OAuth token"
 }
 
 function RenewOAuthToken
@@ -580,9 +609,9 @@ function GetOAuthCredentials
     if ($OAuthDebug)
     {
         $global:OAuthResponse = $script:oAuthToken
+        LogVerbose "`$oAuthResponse contains token response"
         $global:OAuthAccessToken = $script:oAuthAccessToken
-        LogVerbose "`$OAuthAccessToken:"
-        LogVerbose $global:OAuthAccessToken
+        LogVerbose "`$OAuthAccessToken: `r`n$($global:OAuthAccessToken)"
         LogOAuthTokenInfo
     }
     
@@ -601,7 +630,7 @@ function ApplyEWSOAuthCredentials
     if ( $script:services -eq $null ) { return }
 
     
-    if ($DebugTokenRenewal -and $script:oauthToken)
+    if ($DebugTokenRenewal -gt 0 -and $script:oauthToken)
     {
         # When debugging tokens, we stop after on every other EWS call and wait for the token to expire
         if ($script:oAuthDebugStop)
@@ -624,6 +653,7 @@ function ApplyEWSOAuthCredentials
             }
             Write-Host "Token expired, continuing..." -ForegroundColor Cyan
             $oAuthDebugStop = $false
+            $DebugTokenRenewal--
         }
         else
         {
@@ -670,13 +700,7 @@ function ApplyEWSOAuthCredentials
         }
         LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
-
-    if ($DebugTokenRenewal)
-    {
-        $global:oAuthTokenDebug = $script:oauthToken
-    }
 }
-#>** OAUTH FUNCTIONS END ** #
 
 Function LoadEWSManagedAPI
 {
@@ -688,7 +712,6 @@ Function LoadEWSManagedAPI
     if (!$ewsApiLoaded)
     {
         # Failed to load the EWS API, so try to install it from Nuget
-        Write-Host "EWS Managed API not found.  Checking available packages." -ForegroundColor Yellow
         $ewsapi = Find-Package "Exchange.WebServices.Managed.Api"
         if ($ewsapi.Entities.Name.Equals("Microsoft"))
         {
@@ -729,7 +752,9 @@ Function CurrentUserPrimarySmtpAddress()
 
     if ($result -ne $null)
     {
-        return $result.Properties["mail"]
+        $mail = $result.Properties["mail"]
+        LogDebug "Current user's SMTP address is: $mail"
+        return $mail
     }
     return $null
 }
@@ -737,34 +762,27 @@ Function CurrentUserPrimarySmtpAddress()
 Function TrustAllCerts()
 {
     # Implement call-back to override certificate handling (and accept all)
-    $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-    $Compiler=$Provider.CreateCompiler()
-    $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-    $Params.GenerateExecutable=$False
-    $Params.GenerateInMemory=$True
-    $Params.IncludeDebugInformation=$False
-    $Params.ReferencedAssemblies.Add("System.DLL") | Out-Null
 
     $TASource=@'
         namespace Local.ToolkitExtensions.Net.CertificatePolicy {
-        public class TrustAll : System.Net.ICertificatePolicy {
-            public TrustAll()
-            {
+            public class TrustAll : System.Net.ICertificatePolicy {
+                public TrustAll()
+                {
+                }
+                public bool CheckValidationResult(System.Net.ServicePoint sp,
+                                                    System.Security.Cryptography.X509Certificates.X509Certificate cert, 
+                                                    System.Net.WebRequest req, int problem)
+                {
+                    return true;
+                }
             }
-            public bool CheckValidationResult(System.Net.ServicePoint sp,
-                                                System.Security.Cryptography.X509Certificates.X509Certificate cert, 
-                                                System.Net.WebRequest req, int problem)
-            {
-                return true;
-            }
-        }
         }
 '@ 
-    $TAResults=$Provider.CompileAssemblyFromSource($Params,$TASource)
-    $TAAssembly=$TAResults.CompiledAssembly
+
+    Add-Type -TypeDefinition $TASource -ReferencedAssemblies "System.DLL"
 
     ## We now create an instance of the TrustAll and attach it to the ServicePointManager
-    $TrustAll=$TAAssembly.CreateInstance("Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll")
+    $TrustAll=[Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll]::new()
     [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
 }
 
@@ -780,19 +798,12 @@ Function CreateTraceListener($service)
 
     if ($script:Tracer -eq $null)
     {
-        $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-        $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-        $Params.GenerateExecutable=$False
-        $Params.GenerateInMemory=$True
-        $Params.IncludeDebugInformation=$False
-	    $Params.ReferencedAssemblies.Add("System.dll") | Out-Null
-        $Params.ReferencedAssemblies.Add($EWSManagedApiPath) | Out-Null
-
-        $traceFileForCode = $traceFile.Replace("\", "\\")
+        $traceFileForCode = ""
 
         if (![String]::IsNullOrEmpty($TraceFile))
         {
             Log "Tracing to: $TraceFile"
+            $traceFileForCode = $traceFile.Replace("\", "\\")
         }
 
         $TraceListenerClass = @"
@@ -802,75 +813,81 @@ Function CreateTraceListener($service)
 		    using System.Threading;
 		    using Microsoft.Exchange.WebServices.Data;
 		
-            namespace TraceListener {
-		        public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
-		        {
-			        private StreamWriter _traceStream = null;
-                    private string _lastResponse = String.Empty;
+		    public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+		    {
+			    private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
 
-			        public EWSTracer()
-			        {
-				        try
-				        {
-					        _traceStream = File.AppendText("$traceFileForCode");
-				        }
-				        catch { }
-			        }
-
-			        ~EWSTracer()
-			        {
-                        Close();
-			        }
-
-                    public void Close()
-			        {
-				        try
-				        {
-					        _traceStream.Flush();
-					        _traceStream.Close();
-				        }
-				        catch { }
-			        }
-
-
-			        public void Trace(string traceType, string traceMessage)
-			        {
-                        if ( traceType.Equals("EwsResponse") )
-                            _lastResponse = traceMessage;
-
-                        if ( traceType.Equals("EwsRequest") )
-                            _lastResponse = String.Empty;
-
-				        if (_traceStream == null)
-					        return;
-
-				        lock (this)
-				        {
-					        try
-					        {
-						        _traceStream.WriteLine(traceMessage);
-						        _traceStream.Flush();
-					        }
-					        catch { }
-				        }
-			        }
-
-                    public string LastResponse
-                    {
-                        get { return _lastResponse; }
-                    }
-		        }
-            }
+			    public EWSTracer()
+			    {
 "@
-
-        $TraceCompilation=$Provider.CompileAssemblyFromSource($Params,$TraceListenerClass)
-        $TraceAssembly=$TraceCompilation.CompiledAssembly
-        $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
+    if (![String]::IsNullOrEmpty(($traceFileForCode)))
+    {
+        $TraceListenerClass = 
+@"
+$TraceListenerClass
+				    try
+				    {
+					    _traceStream = File.AppendText("$traceFileForCode");
+				    }
+				    catch { }
+"@
     }
 
-    # Attach the trace listener to the Exchange service
-    $service.TraceListener = $script:Tracer
+        $TraceListenerClass = 
+@"
+$TraceListenerClass			        }
+
+			    ~EWSTracer()
+			    {
+                    Close();
+			    }
+
+                public void Close()
+			    {
+				    try
+				    {
+					    _traceStream.Flush();
+					    _traceStream.Close();
+				    }
+				    catch { }
+			    }
+
+
+			    public void Trace(string traceType, string traceMessage)
+			    {
+                    if ( traceType.Equals("EwsResponse") )
+                        _lastResponse = traceMessage;
+
+                    if ( traceType.Equals("EwsRequest") )
+                        _lastResponse = String.Empty;
+
+				    if (_traceStream == null)
+					    return;
+
+					try
+					{
+						_traceStream.WriteLine(traceMessage);
+						_traceStream.Flush();
+					}
+					catch { }
+			    }
+
+                public string LastResponse
+                {
+                    get { return _lastResponse; }
+                }
+		    }
+"@
+
+        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        $script:Tracer=[EWSTracer]::new()
+
+        # Attach the trace listener to the Exchange service
+        $service.TraceListener = $script:Tracer
+    }
 }
+#>** EWS/OAUTH FUNCTIONS END **#
 
 Function Throttled()
 {
@@ -2289,6 +2306,7 @@ Function ProcessItem()
 		throw "No item specified"
 	}
 
+    if ($script:itemLimitHit) { return }
     if ( -not (ItemHasRequiredProperties($item)) -or -not (ItemPropertiesMatchRequirements($item)) ) { return }
     if ( -not (ItemMatchesRecipientRequirements($item)) ) { return }
     if ( -not (ItemMatchesDateRequirement($item)) ) { return }
@@ -2296,13 +2314,24 @@ Function ProcessItem()
     LogVerbose "Processing item: $($item.Subject)"
     $script:itemsMatched++
 
-    if ($MaximumNumberOfItemsToProcess -gt 0 -and !$WhatIf)
+    if ($MaximumNumberOfItemsToProcess -gt 0)
     {
-        if ($script:itemsMatched -gt $MaximumNumberOfItemsToProcess)
+        if ($script:itemsMatched -ge $MaximumNumberOfItemsToProcess)
         {
-            # We've processed maximum number of items, so turn -WhatIf on
-            Log "$MaximumNumberOfItemsToProcess items processed, enabling -WhatIf" Green
+            # We've processed maximum number of items, so turn -WhatIf on            
             $script:WhatIf = $true
+
+            if ($StopAfterMaximumNumberOfItemsProcessed)
+            {
+                Log "$MaximumNumberOfItemsToProcess items processed, halting further action" Green
+                $script:itemLimitHit = $true
+                return
+            }
+            else
+            {
+                $MaximumNumberOfItemsToProcess = 0
+                Log "$MaximumNumberOfItemsToProcess items processed, -WhatIf enabled for further processing" Green
+            }
         }
     }
 
@@ -2745,6 +2774,7 @@ Function ProcessFolder()
             {
                 Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
             }
+            if ($script:itemLimitHit) { break }
         }
     }
     else
@@ -2764,13 +2794,14 @@ Function ProcessFolder()
                 foreach ($fullItem in $fullItems)
                 {
                     ProcessItem $fullItem.Item
+                    if ($script:itemLimitHit) { break }
                 }
                 $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
                 Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
 
             }
         }
-        if ($itemIds.Count -gt 0)
+        if ($itemIds.Count -gt 0 -and -not $script:itemLimitHit)
         {
             # Process the remaining items
             $fullItems = $script:service.BindToItems( $itemIds, $script:RequiredPropSet )
@@ -2778,6 +2809,7 @@ Function ProcessFolder()
             foreach ($fullItem in $fullItems)
             {
                 ProcessItem $fullItem.Item
+                if ($script:itemLimitHit) { break }
             }
             $itemIds = New-Object 'System.Collections.Generic.List[Microsoft.Exchange.WebServices.Data.ItemId]'
             Write-Progress -Activity "$progressActivity processing items" -Status "$i items processed" -PercentComplete (($i/$itemsToProcess.Count)*100)
@@ -2850,6 +2882,7 @@ function ProcessMailbox()
     $script:itemsResent = 0
     $script:itemsMatched = 0
     $script:itemsWithError = 0
+    $script:itemLimitHit = $false
 
     # FolderPath can support arrays (list of folders)
     if ([String]::IsNullOrEmpty($FolderPath))
