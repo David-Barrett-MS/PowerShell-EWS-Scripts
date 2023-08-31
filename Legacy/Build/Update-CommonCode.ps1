@@ -1,7 +1,7 @@
 ﻿#
 # Update-CommonCode.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016-2022. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2023. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
@@ -16,7 +16,7 @@
 # $ScriptFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy"
 # $SharedFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Build"
 # $BackupFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Backup"
-# .\Update-CommonCode.ps1 -ScriptFolder $ScriptFolder -SharedCode @("$SharedFolder\EWSOAuth.ps1", "$SharedFolder\Logging.ps1") -BackupFolder $BackupFolder
+# .\Update-CommonCode.ps1 -ScriptFolder $ScriptFolder -SharedCode @("EWSOAuth.ps1", "Logging.ps1") -BackupFolder $BackupFolder -SharedCodeFolder $SharedFolder
 
 
 param (
@@ -26,6 +26,9 @@ param (
 	
     [Parameter(Mandatory=$True,HelpMessage="Shared code file(s) to be injected.")]
     $SharedCode,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Folder where shared code files are located.")]
+    $SharedCodeFolder,
 
     [Parameter(Mandatory=$False,HelpMessage="Folder where files will be backed up prior to update (if not specified, .ccbak file will be created)")]
     $BackupFolder
@@ -112,7 +115,15 @@ foreach ($psSourceFile in $psSourceFiles)
 
     $script:codeUpdated = $false
     $SharedCode | foreach {
-        $updatedCode = ReplaceSharedCode $updatedCode $_
+        $sharedCodeModule = $_
+        if (-not (Test-Path $sharedCodeModule))
+        {
+            $sharedCodeModule = "$SharedCodeFolder\$sharedCodeModule"
+        }
+        if (Test-Path $sharedCodeModule)
+        {
+            $updatedCode = ReplaceSharedCode $updatedCode $sharedCodeModule
+        }
     }
 
     $backupFileName = "$ScriptFolder\$psSourceFile.ccbak"
@@ -141,6 +152,6 @@ foreach ($psSourceFile in $psSourceFiles)
     }
     else
     {
-        Write-Host "No change to $psSourceFile" -ForegroundColor Green
+        Write-Host "No change to $psSourceFile" -ForegroundColor Yellow
     }
 }

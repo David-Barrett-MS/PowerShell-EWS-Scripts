@@ -1,7 +1,7 @@
 ﻿#
 # Test-EWSScripts.ps1
 #
-# By David Barrett, Microsoft Ltd. 2015-2023. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2023. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
@@ -27,7 +27,7 @@ $clientIdAppPermissions = "f61d7821-7aaf-4d24-b34f-ca50528bcc7b" # App Id for ap
 # e.g. $certificate = Get-Item Cert:\CurrentUser\My\50B510B4AE120D9B0EE3F059B6DD494469CD6D3B
 
 # Delegated permissions client info
-$clientIdDelegatePermissions = "42eb458d-96d4-4a5b-9d0c-2467e1cf2e59" # App Id for app granted EWS.AccessAsUser.All
+$clientIdDelegatePermissions = ""#"42eb458d-96d4-4a5b-9d0c-2467e1cf2e59" # App Id for app granted EWS.AccessAsUser.All
 
 # Mailboxes
 $Mailbox = "dave@demonmaths.co.uk" # Primary mailbox
@@ -66,6 +66,8 @@ function AppPermissionsCheck()
 function TestRecoverDeletedItems1()
 {
     $global:testDescriptions.Add("TestRecoverDeletedItems1", "RecoverDeletedItems.ps1: attempt to access delegated archive mailbox using delegated permissions and show which items would be restored from ArchiveRecoverableItemsDeletions.")
+    if (!$runDelegatePermissionTests) { return "Skipped as delegate configuration incomplete/disabled" }
+
     $Error.Clear()
     trap {}
     .\RecoverDeletedItems.ps1 -Mailbox $DelegatedMailbox -Archive -RestoreFromFolder "WellKnownFolderName.ArchiveRecoverableItemsDeletions" -Office365 -OAuthTenantId $tenantId -OAuthClientId $clientIdDelegatePermissions -WhatIf
@@ -81,6 +83,8 @@ function TestRecoverDeletedItems1()
 function TestRecoverDeletedItems2()
 {
     $global:testDescriptions.Add("TestRecoverDeletedItems2", "RecoverDeletedItems.ps1: attempt to access other (inaccessible) archive mailbox using delegated permissions and show which items would be restored from ArchiveRecoverableItemsDeletions.")
+    if (!$runDelegatePermissionTests) { return "Skipped as delegate configuration incomplete/disabled" }
+
     $Error.Clear()
     trap {}
     .\RecoverDeletedItems.ps1 -Mailbox $InaccessibleMailbox -Archive -RestoreFromFolder "WellKnownFolderName.ArchiveRecoverableItemsDeletions" -Office365 -OAuthTenantId $tenantId -OAuthClientId $clientIdDelegatePermissions -WhatIf
@@ -107,6 +111,7 @@ function TestRecoverDeletedItems3()
 {
     $global:testDescriptions.Add("TestRecoverDeletedItems3", "RecoverDeletedItems.ps1: access delegated archive mailbox using delegated permissions and show which items would be restored from ArchiveRecoverableItemsDeletions.")
     if ($skipOAuthDebug) { return "Skipped as OAuth debugging disabled" }
+    if (!$runDelegatePermissionTests) { return "Skipped as delegate configuration incomplete/disabled" }
 
     $Error.Clear()
     trap {}
@@ -123,6 +128,8 @@ function TestRecoverDeletedItems3()
 function TestUpdateFolderItems1()
 {
     $global:testDescriptions.Add("TestUpdateFolderItems1", "Update-FolderItems.ps1: access primary mailbox using delegated permissions and set isRead for first 5 items in Inbox to true.")
+    if (!$runDelegatePermissionTests) { return "Skipped as delegate configuration incomplete/disabled" }
+
     $Error.Clear()
     trap {}
     .\Update-FolderItems.ps1 -Mailbox $Mailbox -FolderPath "WellKnownFolderName.Inbox" -MarkAsRead -Office365 -OAuth -OAuthTenantId $tenantId -OAuthClientId $clientIdDelegatePermissions -MaximumNumberOfItemsToProcess 5
@@ -190,6 +197,26 @@ function TestSearchMailboxForMessageClass1()
 }
 
 
+# Test MergeMailboxFolder with application permissions to primary mailbox
+function TestMergeMailboxFolder1()
+{
+    $global:testDescriptions.Add("TestMergeMailboxFolder1", "Merge-MailboxItems.ps1: access primary mailbox using application permissions and show what would be copied from Inbox to InboxCopy folder.")
+    if (!$runAppPermissionTests) { return "Skipped as app configuration incomplete" }
+
+    $Error.Clear()
+    trap {}
+    $mmresult = .\Merge-MailboxFolder.ps1 -SourceMailbox $Mailbox -MergeFolderList @{"InboxCopy" = "WellKnownFolderName.Inbox"} -WhatIf -ReturnTotalItemsAffected -Office365 -OAuth -OAuthTenantId $tenantId -OAuthClientId $clientIdAppPermissions -OAuthSecretKey $secretKey
+    if ($Error.Count -gt 0)
+    {
+        return "Failed, error when accessing $Mailbox"
+    }
+    if ($mmresult -gt 0)
+    {
+        return "Succeeded, $Mailbox accessible and $mmresult items found to copy"
+    }
+    return "Check mailbox contents - no error reported, but no items found to copy (is Inbox empty?)"
+}
+
 # Run tests and collate results
 AppPermissionsCheck
 $global:testDescriptions = @{}
@@ -201,6 +228,7 @@ $results.Add("TestUpdateFolderItems1", "$(TestUpdateFolderItems1)")
 $results.Add("TestUpdateFolderItems2", "$(TestUpdateFolderItems2)")
 $results.Add("TestUpdateFolderItems3", "$(TestUpdateFolderItems3)")
 $results.Add("TestSearchMailboxForMessageClass1", "$(TestSearchMailboxForMessageClass1)")
+$results.Add("TestMergeMailboxFolder1", "$(TestMergeMailboxFolder1)")
 $global:testResults = $results
 
 
@@ -216,13 +244,13 @@ foreach ($testName in $results.Keys)
     {
         Write-Host "$($results[$testName])" -ForegroundColor Green
     }
-    elseif ($results[$testName].StartsWith("Skipped"))
+    elseif ($results[$testName].StartsWith("Failed"))
     {
-        Write-Host "$($results[$testName])" -ForegroundColor Yellow
+        Write-Host "$($results[$testName])" -ForegroundColor Red        
     }
     else
     {
-        Write-Host "$($results[$testName])" -ForegroundColor Red
+        Write-Host "$($results[$testName])" -ForegroundColor Yellow
     }
 }
 

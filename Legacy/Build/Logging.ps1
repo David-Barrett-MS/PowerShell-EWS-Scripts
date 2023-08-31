@@ -1,7 +1,7 @@
 ﻿#
 # Logging.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016-2022. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2016-2023. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
