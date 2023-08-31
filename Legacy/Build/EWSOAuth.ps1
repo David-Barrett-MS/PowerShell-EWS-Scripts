@@ -14,7 +14,7 @@
 
 param (
 
-#>** AUTHENTICATION PARAMETERS START **#
+#>** EWS/OAUTH PARAMETERS START **#
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
@@ -40,9 +40,33 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
     [switch]$OAuthDebug,
 
-    [Parameter(Mandatory=$False,HelpMessage="Enables token debugging (for development purposes)")]	
-    [switch]$DebugTokenRenewal,
-#>** AUTHENTICATION PARAMETERS END **#
+    [Parameter(Mandatory=$False,HelpMessage="A value greater than 0 enables token debugging (specify total number of token renewals to debug).")]	
+    $DebugTokenRenewal = 0,
+
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
+    [switch]$Impersonate,
+	
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used).")]	
+    [string]$EwsUrl,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl).")]
+    [switch]$Office365,
+	
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only TLS 1.2 connections will be negotiated.")]
+    [switch]$ForceTLS12,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed).")]	
+    [string]$EWSManagedApiPath = "",
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate).")]	
+    [switch]$IgnoreSSLCertificate,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing AutoDiscover.")]	
+    [switch]$AllowInsecureRedirection,
+
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file.")]	
+    [string]$TraceFile,
+#>** EWS/OAUTH PARAMETERS END **#
 
     [Parameter(Mandatory=$False,HelpMessage="This is a dummy parameter to avoid syntax error.")]
     $Dummy = $null
@@ -51,7 +75,62 @@ param (
 
 
 
-#>** OAUTH FUNCTIONS START **#
+#>** EWS/OAUTH FUNCTIONS START **#
+function LoadLibraries()
+{
+    param (
+        [bool]$searchProgramFiles,
+        $dllNames,
+        [ref]$dllLocations = @()
+    )
+    # Attempt to find and load the specified libraries
+
+    foreach ($dllName in $dllNames)
+    {
+        # First check if the dll is in current directory
+        LogDebug "Searching for DLL: $dllName"
+        $dll = $null
+        $dll = Get-ChildItem $dllName -ErrorAction Ignore
+
+        if ($searchProgramFiles)
+        {
+            if ($dll -eq $null)
+            {
+	            $dll = Get-ChildItem -Recurse "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
+	            if (!$dll)
+	            {
+		            $dll = Get-ChildItem -Recurse "C:\Program Files" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
+	            }
+            }
+        }
+
+        if ($dll -eq $null)
+        {
+            Log "Unable to load locate $dll" Red
+            return $false
+        }
+        else
+        {
+            try
+            {
+		        LogVerbose ([string]::Format("Loading {2} v{0} found at: {1}", $dll.VersionInfo.FileVersion, $dll.VersionInfo.FileName, $dllName))
+		        Add-Type -Path $dll.VersionInfo.FileName
+                if ($dllLocations)
+                {
+                    $dllLocations.value += $dll.VersionInfo.FileName
+                    ReportError
+                }
+            }
+            catch
+            {
+                ReportError "LoadLibraries"
+                return $false
+            }
+        }
+    }
+    return $true
+}
+
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
@@ -84,35 +163,44 @@ function GetTokenViaCode
 {
     # Acquire auth code (needed to request token)
     $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
-    Write-Host "Please complete log-in via the web browser, and then paste the redirect URL (including auth code) here to continue" -ForegroundColor Green
+    Write-Host "Please complete log-in via the web browser, and then copy the redirect URL (including auth code) to the clipboard to continue" -ForegroundColor Green
+    Set-Clipboard -Value "Waiting for auth code"
     Start-Process $authUrl
 
-    $authcode = Read-Host "Auth code"
+    do
+    {
+        $authcode = Get-Clipboard
+        Start-Sleep -Milliseconds 250
+    } while ($authCode -eq "Waiting for auth code")
+
     $codeStart = $authcode.IndexOf("?code=")
     if ($codeStart -gt 0)
     {
         $authcode = $authcode.Substring($codeStart+6)
+        $codeEnd = $authcode.IndexOf("&session_state=")
+        if ($codeEnd -gt 0)
+        {
+            $authcode = $authcode.Substring(0, $codeEnd)
+        }
+        Write-Verbose "Using auth code: $authcode"
     }
-    $codeEnd = $authcode.IndexOf("&session_state=")
-    if ($codeEnd -gt 0)
+    else
     {
-        $script:AuthCode = $authcode.Substring(0, $codeEnd)
+        throw "Failed to obtain Auth code from clipboard"
     }
-    Write-Verbose "Using auth code: $authcode"
 
     # Acquire token (using the auth code)
-    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$script:AuthCode;redirect_uri=$OAuthRedirectUri}
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
     try
     {
         $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
         $script:oAuthAccessToken = $script:oAuthToken.access_token
         $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        return
     }
-    catch
-    {
-        Write-Host "Failed to obtain OAuth token" -ForegroundColor Red
-        exit # Failed to obtain a token
-    }
+    catch {}
+
+    throw "Failed to obtain OAuth token"
 }
 
 function RenewOAuthToken
@@ -271,6 +359,7 @@ function GetOAuthCredentials
 }
 
 $script:oAuthDebugStop = $false
+$script:oAuthDebugStopCount = 0
 function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
@@ -279,7 +368,7 @@ function ApplyEWSOAuthCredentials
     if ( $script:services -eq $null ) { return }
 
     
-    if ($DebugTokenRenewal -and $script:oauthToken)
+    if ($DebugTokenRenewal -gt 0 -and $script:oauthToken)
     {
         # When debugging tokens, we stop after on every other EWS call and wait for the token to expire
         if ($script:oAuthDebugStop)
@@ -302,10 +391,14 @@ function ApplyEWSOAuthCredentials
             }
             Write-Host "Token expired, continuing..." -ForegroundColor Cyan
             $oAuthDebugStop = $false
+            $script:oAuthDebugStopCount++
         }
         else
         {
-            $script:oAuthDebugStop = $true
+            if ($DebugTokenRenewal-$script:oAuthDebugStopCount -gt 0)
+            {
+                $script:oAuthDebugStop = $true
+            }
         }
     }
     
@@ -348,10 +441,191 @@ function ApplyEWSOAuthCredentials
         }
         LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
+}
 
-    if ($DebugTokenRenewal)
+Function LoadEWSManagedAPI
+{
+	# Find and load the managed API
+    $ewsApiLocation = @()
+    $ewsApiLoaded = $(LoadLibraries -searchProgramFiles $true -dllNames @("Microsoft.Exchange.WebServices.dll") -dllLocations ([ref]$ewsApiLocation))
+    ReportError "LoadEWSManagedAPI"
+
+    if (!$ewsApiLoaded)
     {
-        $global:oAuthTokenDebug = $script:oauthToken
+        # Failed to load the EWS API, so try to install it from Nuget
+        $ewsapi = Find-Package "Exchange.WebServices.Managed.Api"
+        if ($ewsapi.Entities.Name.Equals("Microsoft"))
+        {
+	        # We have found EWS API package, so install as current user (confirm with user first)
+	        Write-Host "EWS Managed API is not installed, but is available from Nuget.  Install now for current user (required for this script to continue)? (Y/n)" -ForegroundColor Yellow
+	        $response = Read-Host
+	        if ( $response.ToLower().Equals("y") )
+	        {
+		        Install-Package $ewsapi -Scope CurrentUser -Force
+                $ewsApiLoaded = $(LoadLibraries -searchProgramFiles $true -dllNames @("Microsoft.Exchange.WebServices.dll") -dllLocations ([ref]$ewsApiLocation))
+                ReportError "LoadEWSManagedAPI"
+	        }
+        }
+    }
+
+    if ($ewsApiLoaded)
+    {
+        if ($ewsApiLocation[0])
+        {
+            Log "Using EWS Managed API found at: $($ewsApiLocation[0])" Gray
+            $script:EWSManagedApiPath = $ewsApiLocation[0]
+        }
+        else
+        {
+            Write-Host "Failed to read EWS API location: $ewsApiLocation"
+            Exit
+        }
+    }
+
+    return $ewsApiLoaded
+}
+
+Function CurrentUserPrimarySmtpAddress()
+{
+    # Attempt to retrieve the current user's primary SMTP address
+    $searcher = [adsisearcher]"(samaccountname=$env:USERNAME)"
+    $result = $searcher.FindOne()
+
+    if ($result -ne $null)
+    {
+        $mail = $result.Properties["mail"]
+        LogDebug "Current user's SMTP address is: $mail"
+        return $mail
+    }
+    return $null
+}
+
+Function TrustAllCerts()
+{
+    # Implement call-back to override certificate handling (and accept all)
+
+    $TASource=@'
+        namespace Local.ToolkitExtensions.Net.CertificatePolicy {
+            public class TrustAll : System.Net.ICertificatePolicy {
+                public TrustAll()
+                {
+                }
+                public bool CheckValidationResult(System.Net.ServicePoint sp,
+                                                    System.Security.Cryptography.X509Certificates.X509Certificate cert, 
+                                                    System.Net.WebRequest req, int problem)
+                {
+                    return true;
+                }
+            }
+        }
+'@ 
+
+    Add-Type -TypeDefinition $TASource -ReferencedAssemblies "System.DLL"
+
+    ## We now create an instance of the TrustAll and attach it to the ServicePointManager
+    $TrustAll=[Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll]::new()
+    [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
+}
+
+Function CreateTraceListener($service)
+{
+    # Create trace listener to capture EWS conversation (useful for debugging)
+
+    if ([String]::IsNullOrEmpty($EWSManagedApiPath))
+    {
+        Log "Managed API path missing; unable to create tracer" Red
+        Exit
+    }
+
+    if ($script:Tracer -eq $null)
+    {
+        $traceFileForCode = ""
+
+        if (![String]::IsNullOrEmpty($TraceFile))
+        {
+            Log "Tracing to: $TraceFile"
+            $traceFileForCode = $traceFile.Replace("\", "\\")
+        }
+
+        $TraceListenerClass = @"
+		    using System;
+		    using System.Text;
+		    using System.IO;
+		    using System.Threading;
+		    using Microsoft.Exchange.WebServices.Data;
+		
+		    public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+		    {
+			    private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
+
+			    public EWSTracer()
+			    {
+"@
+    if (![String]::IsNullOrEmpty(($traceFileForCode)))
+    {
+        $TraceListenerClass = 
+@"
+$TraceListenerClass
+				    try
+				    {
+					    _traceStream = File.AppendText("$traceFileForCode");
+				    }
+				    catch { }
+"@
+    }
+
+        $TraceListenerClass = 
+@"
+$TraceListenerClass			        }
+
+			    ~EWSTracer()
+			    {
+                    Close();
+			    }
+
+                public void Close()
+			    {
+				    try
+				    {
+					    _traceStream.Flush();
+					    _traceStream.Close();
+				    }
+				    catch { }
+			    }
+
+
+			    public void Trace(string traceType, string traceMessage)
+			    {
+                    if ( traceType.Equals("EwsResponse") )
+                        _lastResponse = traceMessage;
+
+                    if ( traceType.Equals("EwsRequest") )
+                        _lastResponse = String.Empty;
+
+				    if (_traceStream == null)
+					    return;
+
+					try
+					{
+						_traceStream.WriteLine(traceMessage);
+						_traceStream.Flush();
+					}
+					catch { }
+			    }
+
+                public string LastResponse
+                {
+                    get { return _lastResponse; }
+                }
+		    }
+"@
+
+        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        $script:Tracer=[EWSTracer]::new()
+
+        # Attach the trace listener to the Exchange service
+        $service.TraceListener = $script:Tracer
     }
 }
-#>** OAUTH FUNCTIONS END **#
+#>** EWS/OAUTH FUNCTIONS END **#

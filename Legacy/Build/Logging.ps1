@@ -19,6 +19,12 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified.")]	
     [string]$LogFile = "",
 
+    [Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
+    [switch]$VerboseLogFile,
+
+    [Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
+    [switch]$DebugLogFile,
+
     [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled).")]
     [switch]$FastFileLogging,
 #>** LOGGING PARAMETERS END **#
@@ -48,15 +54,10 @@ Function UpdateDetailsWithCallingMethod([string]$Details)
     return "$timeInfo $Details"
 }
 
-Function Log([string]$Details, [ConsoleColor]$Colour)
+Function LogToFile([string]$logInfo)
 {
-    if ($Colour -eq $null)
-    {
-        $Colour = [ConsoleColor]::White
-    }
-    $Details = UpdateDetailsWithCallingMethod( $Details )
-    Write-Host $Details -ForegroundColor $Colour
-
+    if ( [String]::IsNullOrEmpty($LogFile) ) { return }
+    
     if ($FastFileLogging)
     {
         # Writing the log file using a FileStream (that we keep open) is significantly faster than using out-file (which opens, writes, then closes the file each time it is called)
@@ -93,21 +94,32 @@ Function Log([string]$Details, [ConsoleColor]$Colour)
         }
     }
 
+	$logInfo | Out-File $LogFile -Append
+}
+
+Function Log([string]$Details, [ConsoleColor]$Colour)
+{
+    if ($Colour -eq $null)
+    {
+        $Colour = [ConsoleColor]::White
+    }
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Host $Details -ForegroundColor $Colour
     LogToFile $Details
 }
 Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" Green
 
 Function LogVerbose([string]$Details)
 {
-    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
+    if ( !$VerboseLogFile -and !$DebugLogFile -and ($VerbosePreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
 }
 
 Function LogDebug([string]$Details)
 {
-    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
+    if (!$DebugLogFile -and ($DebugPreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
 }
 

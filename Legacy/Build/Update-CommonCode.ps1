@@ -16,7 +16,7 @@
 # $ScriptFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy"
 # $SharedFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Build"
 # $BackupFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Backup"
-# .\Update-CommonCode.ps1 -ScriptFolder $ScriptFolder -SharedCode "$SharedFolder\EWSOAuth.ps1" -BackupFolder $BackupFolder
+# .\Update-CommonCode.ps1 -ScriptFolder $ScriptFolder -SharedCode @("$SharedFolder\EWSOAuth.ps1", "$SharedFolder\Logging.ps1") -BackupFolder $BackupFolder
 
 
 param (
