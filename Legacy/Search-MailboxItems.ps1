@@ -40,11 +40,11 @@ param (
     [ValidateNotNullOrEmpty()]
     [string]$MessageClass,
 
-    [Parameter(Mandatory=$false, HelpMessage="The start date for your search criteria. All messages created before this date will be deleted.")]
-    [datetime] $CreatedBefore,
+    [Parameter(Mandatory=$false, HelpMessage="If specified, only messages created before this date will be matched.")]
+    [datetime]$CreatedBefore,
 
-    [Parameter(Mandatory=$false, HelpMessage="The start date for your search criteria. All messages created after this date will be deleted.")]
-    [datetime] $CreatedAfter,
+    [Parameter(Mandatory=$false, HelpMessage="If specified, only messages created after this date will be matched.")]
+    [datetime]$CreatedAfter,
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, items will match if the subject contains this string.")]
     [string]$Subject,
@@ -52,10 +52,10 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Will match only items with the specified sender.")]
     [string]$Sender,
     
-    [Parameter(Mandatory=$False,HelpMessage="MessageId used for the search")]
+    [Parameter(Mandatory=$False,HelpMessage="Only item(s) with this MessageId will be matched.")]
     [string]$MessageId,
 
-    [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the list of those that will be retrieved for an item (must be supplied as hash table @{}).")]
+    [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the list of those that will be retrieved for an item (must be supplied as hash table @{}).  By default, Id, Subject and Sender are retrieved.")]
     $ViewProperties,
 	
     [Parameter(Mandatory=$False,HelpMessage="Specifies the new message class that will be applied to the items (note that you cannot change the base item class of an item).")]
@@ -145,7 +145,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 200
 )
-$script:ScriptVersion = "1.0.0"
+$script:ScriptVersion = "1.0.1"
 
 # Define our functions
 
