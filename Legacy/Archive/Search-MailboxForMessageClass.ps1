@@ -52,6 +52,20 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If set, matching items will not be written to the pipeline (but any specified actions will be taken).")]
     [switch]$DoNotOutputMatches,
+
+    [Parameter(Mandatory=$false, HelpMessage="The start date for your search criteria. All messages created before this date will be deleted.")]
+    [datetime] $CreatedBefore,
+
+    [Parameter(Mandatory=$false, HelpMessage="The start date for your search criteria. All messages created after this date will be deleted.")]
+    [datetime] $CreateAfter,
+
+
+    [Parameter(Mandatory=$False,HelpMessage="Message subject used for the search")][string]$Subject,
+    [Parameter(Mandatory=$False,HelpMessage="Message sender used for the search")][string]$Sender,
+    [Parameter(Mandatory=$False,HelpMessage="Message recipient used for the search")][string]$Recipient,
+    [Parameter(Mandatory=$False,HelpMessage="MessageId used for the search")][string]$MessageId,
+    [Parameter(Mandatory=$false,HelpMessage="If this switch is specified, recoverable items will be searched.")] [switch]$RecoverableItems,
+    [Parameter(Mandatory=$false,HelpMessage="The mailbox GUID for the archive mailbox for proper anchor mailbox")][string]$ArchiveGuid,
     
 #>** EWS/OAUTH PARAMETERS START **#
     [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
@@ -75,6 +89,9 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
     $OAuthCertificate = $null,
+
+    [Parameter(Mandatory=$False,HelpMessage="If set, OAuth tokens will be stored in global variables for access in other scripts/console.  These global variable will be checked by later scripts using delegate auth to prevent additional log-in prompts.")]	
+    [switch]$GlobalTokenStorage,
 
     [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
     [switch]$OAuthDebug,
@@ -516,18 +533,40 @@ function GetOAuthCredentials
         }
         else
         {
-            GetTokenViaCode
+            if ($GlobalTokenStorage -and $script:oauthToken -eq $null)
+            {
+                # Check if we have token variable set globally
+                if ($global:oAuthPersistAppId -eq $OAuthClientId)
+                {
+                    $script:oAuthToken = $global:oAuthPersistToken
+                    $script:oauthTokenAcquireTime = $global:oAuthPersistTokenAcquireTime
+                }
+                RenewOAuthToken
+            }
+            else
+            {
+                GetTokenViaCode
+            }
         }
     }
+
+    if ($GlobalTokenStorage -or $OAuthDebug)
+    {
+        # Store the OAuth in a global variable for later access
+        $global:oAuthPersistToken = $script:oAuthToken
+        $global:oAuthPersistAppId = $OAuthClientId
+        $global:oAuthPersistTokenAcquireTime = $script:oauthTokenAcquireTime
+    } 
+
     if ($OAuthDebug)
     {
-        $global:OAuthResponse = $script:oAuthToken
-        LogVerbose "`$oAuthResponse contains token response"
+        LogVerbose "`$oAuthPersistToken contains token response"
         $global:OAuthAccessToken = $script:oAuthAccessToken
         LogVerbose "`$OAuthAccessToken: `r`n$($global:OAuthAccessToken)"
         LogOAuthTokenInfo
     }
-    
+
+   
 
     # If we get here we have a valid token
     $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
@@ -804,16 +843,26 @@ $TraceListenerClass			        }
         $service.TraceListener = $script:Tracer
     }
 }
-#>** EWS/OAUTH FUNCTIONS END **#
 
-function CreateService($smtpAddress)
+function CreateService($smtpAddress, $impersonatedAddress = "")
 {
     # Creates and returns an ExchangeService object to be used to access mailboxes
+
+    # First of all check to see if we have a service object for this mailbox already
+    if ($script:services -eq $null)
+    {
+        $script:services = @{}
+    }
+    if ($script:services.ContainsKey($smtpAddress))
+    {
+        return $script:services[$smtpAddress]
+    }
 
     # Create new service
     $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
 
     # Do we need to use OAuth?
+    if ($Office365) { $OAuth = $true }
     if ($OAuth)
     {
         $exchangeService.Credentials = GetOAuthCredentials
@@ -871,10 +920,14 @@ function CreateService($smtpAddress)
     	}
     }
  
+    if ([String]::IsNullOrEmpty($impersonatedAddress))
+    {
+        $impersonatedAddress = $smtpAddress
+    }
     $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
     if ($Impersonate)
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
+		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
 	}
 
     # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
@@ -893,8 +946,12 @@ function CreateService($smtpAddress)
         }
     }
 
+    $script:services.Add($smtpAddress, $exchangeService)
+    LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
     return $exchangeService
 }
+
+#>** EWS/OAUTH FUNCTIONS END **#
 
 Function EWSPropertyType($MAPIPropertyType)
 {
@@ -1753,8 +1810,46 @@ Function SearchFolder( $FolderId )
         $view.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Associated
     }
 
-	$searchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass, $MessageClass)
+    $filters = @()
+
+    if (![String]::IsNullOrEmpty($MessageClass))
+    {
+	    $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass, $MessageClass)
+    }
+
+    if (![String]::IsNullOrEmpty($Subject))
+    {
+    }
+
+    if (![String]::IsNullOrEmpty($Sender))
+    {
+    }
 	
+    if (![String]::IsNullOrEmpty($Recipient))
+    {
+    }
+
+    if (![String]::IsNullOrEmpty($MessageId))
+    {
+    }
+
+    # Add filter(s) for creation time
+    if ( $CreatedAfter )
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsGreaterThan($script:PR_CREATION_TIME, $CreatedAfter)
+    }
+    if ( $CreatedBefore )
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsLessThan($script:PR_CREATION_TIME, $CreatedBefore)
+    }
+
+    # Create the search filter
+    $SearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::And)
+    foreach ($filter in $filters)
+    {
+        $SearchFilter.Add($filter)
+    }
+
 	# Perform the search and display the results
 
 	while ($moreItems)
