@@ -135,6 +135,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
     $OAuthCertificate = $null,
 
+    [Parameter(Mandatory=$False,HelpMessage="If set, OAuth tokens will be stored in global variables for access in other scripts/console.  These global variable will be checked by later scripts using delegate auth to prevent additional log-in prompts.")]	
+    [switch]$GlobalTokenStorage,
+
     [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
     [switch]$OAuthDebug,
 
@@ -183,7 +186,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 100
 )
-$script:ScriptVersion = "1.3.1"
+$script:ScriptVersion = "1.3.2"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -368,7 +371,7 @@ function LoadLibraries()
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
-    if (!script:msalApiLoaded)
+    if (!$script:msalApiLoaded)
     {
         $msalLocation = @()
         $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
@@ -387,9 +390,10 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
-    $authResult = $acquire.ExecuteAsync().Result
-    $script:oauthToken = $authResult
+    LogVerbose "Requesting token using certificate auth"
+    $script:oauthToken = $acquire.ExecuteAsync().Result
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
     $script:Impersonate = $true
 }
 
@@ -516,26 +520,43 @@ function JWTToPSObject
 
 function LogOAuthTokenInfo
 {
-    if ($global:OAuthResponse -eq $null)
+    if ($global:OAuthAccessToken -eq $null)
     {
         Log "No OAuth token obtained." Red
         return
     }
 
-    if ([String]::IsNullOrEmpty($global:OAuthResponse.id_token))
+    $idToken = $null
+    if (-not [String]::IsNullOrEmpty($global:OAuthAccessToken.id_token))
     {
-        Log "OAuth ID Token not present" Yellow
+        $idToken = $global:OAuthAccessToken.id_token
+    }
+    elseif (-not [String]::IsNullOrEmpty($global:OAuthAccessToken.IdToken))
+    {
+        $idToken = $global:OAuthAccessToken.IdToken
+    }
+
+    if ([String]::IsNullOrEmpty($idToken))
+    {
+        Log "OAuth ID token not present" Yellow
     }
     else
     {
-        $global:idTokenDecoded = JWTToPSObject($global:OAuthResponse.id_token)
+        $global:idTokenDecoded = JWTToPSObject($idToken)
         Log "OAuth ID Token (`$idTokenDecoded):" Yellow
         Log $global:idTokenDecoded Yellow
     }
 
-    $global:accessTokenDecoded = JWTToPSObject($global:OAuthResponse.access_token)
-    Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
-    Log $global:accessTokenDecoded Yellow
+    if (-not [String]::IsNullOrEmpty($global:OAuthAccessToken))
+    {
+        $global:accessTokenDecoded = JWTToPSObject($global:OAuthAccessToken)
+        Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
+        Log $global:accessTokenDecoded Yellow
+    }
+    else
+    {
+        Log "OAuth access token not present" Red
+    }
 }
 
 function GetOAuthCredentials
@@ -574,18 +595,40 @@ function GetOAuthCredentials
         }
         else
         {
-            GetTokenViaCode
+            if ($GlobalTokenStorage -and $script:oauthToken -eq $null)
+            {
+                # Check if we have token variable set globally
+                if ($global:oAuthPersistAppId -eq $OAuthClientId)
+                {
+                    $script:oAuthToken = $global:oAuthPersistToken
+                    $script:oauthTokenAcquireTime = $global:oAuthPersistTokenAcquireTime
+                }
+                RenewOAuthToken
+            }
+            else
+            {
+                GetTokenViaCode
+            }
         }
     }
+
+    if ($GlobalTokenStorage -or $OAuthDebug)
+    {
+        # Store the OAuth in a global variable for later access
+        $global:oAuthPersistToken = $script:oAuthToken
+        $global:oAuthPersistAppId = $OAuthClientId
+        $global:oAuthPersistTokenAcquireTime = $script:oauthTokenAcquireTime
+    } 
+
     if ($OAuthDebug)
     {
-        $global:OAuthResponse = $script:oAuthToken
-        LogVerbose "`$oAuthResponse contains token response"
+        LogVerbose "`$oAuthPersistToken contains token response"
         $global:OAuthAccessToken = $script:oAuthAccessToken
         LogVerbose "`$OAuthAccessToken: `r`n$($global:OAuthAccessToken)"
         LogOAuthTokenInfo
     }
-    
+
+   
 
     # If we get here we have a valid token
     $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
@@ -638,7 +681,7 @@ function ApplyEWSOAuthCredentials
     
     if ($OAuthCertificate -ne $null)
     {
-        if ( [DateTime]::UtcNow -ge $script:oauthToken.ExpiresOn.UtcDateTime) { return }
+        if ( [DateTime]::UtcNow -lt $script:oauthToken.ExpiresOn.UtcDateTime) { return }
     }
     elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
@@ -862,6 +905,114 @@ $TraceListenerClass			        }
         $service.TraceListener = $script:Tracer
     }
 }
+
+function CreateService($smtpAddress, $impersonatedAddress = "")
+{
+    # Creates and returns an ExchangeService object to be used to access mailboxes
+
+    # First of all check to see if we have a service object for this mailbox already
+    if ($script:services -eq $null)
+    {
+        $script:services = @{}
+    }
+    if ($script:services.ContainsKey($smtpAddress))
+    {
+        return $script:services[$smtpAddress]
+    }
+
+    # Create new service
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
+
+    # Do we need to use OAuth?
+    if ($Office365) { $OAuth = $true }
+    if ($OAuth)
+    {
+        $exchangeService.Credentials = GetOAuthCredentials
+        if ($exchangeService.Credentials -eq $null)
+        {
+            # OAuth failed
+            return $null
+        }
+    }
+    else
+    {
+        # Set credentials if specified, or use logged on user.
+        if ($Credentials -ne $Null)
+        {
+            LogVerbose "Applying given credentials: $($Credentials.UserName)"
+            $exchangeService.Credentials = $Credentials.GetNetworkCredential()
+        }
+        else
+        {
+	        LogVerbose "Using default credentials"
+            $exchangeService.UseDefaultCredentials = $true
+        }
+    }
+
+    # Set EWS URL if specified, or use autodiscover if no URL specified.
+    if ($EwsUrl -or $Office365)
+    {
+        if ($Office365) { $EwsUrl = "https://outlook.office365.com/EWS/Exchange.asmx" }
+    	$exchangeService.URL = New-Object Uri($EwsUrl)
+    }
+    else
+    {
+    	try
+    	{
+		    LogVerbose "Performing autodiscover for $smtpAddress"
+		    if ( $AllowInsecureRedirection )
+		    {
+			    $exchangeService.AutodiscoverUrl($smtpAddress, {$True})
+		    }
+		    else
+		    {
+			    $exchangeService.AutodiscoverUrl($smtpAddress)
+		    }
+		    if ([string]::IsNullOrEmpty($exchangeService.Url))
+		    {
+			    Log "$smtpAddress : autodiscover failed" Red
+			    return $Null
+		    }
+		    LogVerbose "EWS Url found: $($exchangeService.Url)"
+    	}
+    	catch
+    	{
+            Log "$smtpAddress : error occurred during autodiscover: $($Error[0])" Red
+            return $null
+    	}
+    }
+ 
+    if ([String]::IsNullOrEmpty($impersonatedAddress))
+    {
+        $impersonatedAddress = $smtpAddress
+    }
+    $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
+    if ($Impersonate)
+    {
+		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
+	}
+
+    # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
+    if (![String]::IsNullOrEmpty($EWSManagedApiPath))
+    {
+        CreateTraceListener $exchangeService
+        if ($script:Tracer)
+        {
+            $exchangeService.TraceListener = $script:Tracer
+            $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+            $exchangeService.TraceEnabled = $True
+        }
+        else
+        {
+            Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
+        }
+    }
+
+    $script:services.Add($smtpAddress, $exchangeService)
+    LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
+    return $exchangeService
+}
+
 #>** EWS/OAUTH FUNCTIONS END **#
 
 
@@ -1936,114 +2087,6 @@ function ConvertId($entryId)
     catch {}
     LogVerbose "EWS Id: $($ewsId.UniqueId)"
     return $ewsId.UniqueId
-}
-
-function CreateService($smtpAddress, $impersonatedAddress = "")
-{
-    # Creates and returns an ExchangeService object to be used to access mailboxes
-
-    # First of all check to see if we have a service object for this mailbox already
-    if ($script:services -eq $null)
-    {
-        $script:services = @{}
-    }
-    if ($script:services.ContainsKey($smtpAddress))
-    {
-        return $script:services[$smtpAddress]
-    }
-
-    # Create new service
-    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
-
-    # Do we need to use OAuth?
-    if ($OAuth)
-    {
-        $exchangeService.Credentials = GetOAuthCredentials
-        if ($exchangeService.Credentials -eq $null)
-        {
-            # OAuth failed
-            return $null
-        }
-    }
-    else
-    {
-        # Set credentials if specified, or use logged on user.
-        if ($Credentials -ne $Null)
-        {
-            LogVerbose "Applying given credentials: $($Credentials.UserName)"
-            $exchangeService.Credentials = $Credentials.GetNetworkCredential()
-        }
-        else
-        {
-	        LogVerbose "Using default credentials"
-            $exchangeService.UseDefaultCredentials = $true
-        }
-    }
-
-
-
-    # Set EWS URL if specified, or use autodiscover if no URL specified.
-    if ($EwsUrl -or $Office365)
-    {
-        if ($Office365) { $EwsUrl = "https://outlook.office365.com/EWS/Exchange.asmx" }
-    	$exchangeService.URL = New-Object Uri($EwsUrl)
-    }
-    else
-    {
-    	try
-    	{
-		    LogVerbose "Performing autodiscover for $smtpAddress"
-		    if ( $AllowInsecureRedirection )
-		    {
-			    $exchangeService.AutodiscoverUrl($smtpAddress, {$True})
-		    }
-		    else
-		    {
-			    $exchangeService.AutodiscoverUrl($smtpAddress)
-		    }
-		    if ([string]::IsNullOrEmpty($exchangeService.Url))
-		    {
-			    Log "$smtpAddress : autodiscover failed" Red
-			    return $Null
-		    }
-		    LogVerbose "EWS Url found: $($exchangeService.Url)"
-    	}
-    	catch
-    	{
-            Log "$smtpAddress : error occurred during autodiscover: $($Error[0])" Red
-            return $null
-    	}
-    }
- 
-    if ([String]::IsNullOrEmpty($impersonatedAddress))
-    {
-        $impersonatedAddress = $smtpAddress
-    }
-    $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
-    if ($Impersonate)
-    {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
-	}
-
-    # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
-    if (![String]::IsNullOrEmpty($EWSManagedApiPath))
-    {
-        CreateTraceListener $exchangeService
-        if ($script:Tracer)
-        {
-            $exchangeService.TraceListener = $script:Tracer
-            $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
-            $exchangeService.TraceEnabled = $True
-        }
-        else
-        {
-            Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
-        }
-    }
-
-    $script:services.Add($smtpAddress, $exchangeService)
-    LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
-    return $exchangeService
 }
 
 function ProcessMailbox()

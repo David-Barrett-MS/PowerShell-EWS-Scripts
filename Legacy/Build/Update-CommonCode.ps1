@@ -17,6 +17,8 @@
 # $SharedFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Build"
 # $BackupFolder = "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Backup"
 # .\Update-CommonCode.ps1 -ScriptFolder $ScriptFolder -SharedCode @("EWSOAuth.ps1", "Logging.ps1") -BackupFolder $BackupFolder -SharedCodeFolder $SharedFolder
+# .\Update-CommonCode.ps1 -ScriptFolder "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy" -SharedCode @("EWSOAuth.ps1", "Logging.ps1") -BackupFolder "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Backup" -SharedCodeFolder "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Build"
+# .\Update-CommonCode.ps1 -ScriptFolder "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy" -SharedCode @("EWSOAuth.ps1", "Logging.ps1") -BackupFolder "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Backup" -SharedCodeFolder "C:\Tools\PowerShell-EWS-Scripts\PowerShell-EWS-Scripts\Legacy\Build" -StripSharedCode
 
 
 param (
@@ -31,7 +33,10 @@ param (
     $SharedCodeFolder,
 
     [Parameter(Mandatory=$False,HelpMessage="Folder where files will be backed up prior to update (if not specified, .ccbak file will be created)")]
-    $BackupFolder
+    $BackupFolder,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, removes the shared code modules from the target PowerShell scripts.")]
+    [switch]$StripSharedContent
 )
 
 
@@ -72,7 +77,7 @@ function ReplaceSharedCode()
                         $moduleApplied = $true
                         do 
                         {
-                            $updatedCode += $sharedCode[$sharedCodeIndex++]
+                            if (!$StripSharedContent) { $updatedCode += $sharedCode[$sharedCodeIndex++] }
                         } while ($sharedCodeIndex -lt $sharedCode.Length -and -not $sharedCode[$sharedCodeIndex].StartsWith("#>**"))
                         
                         do
