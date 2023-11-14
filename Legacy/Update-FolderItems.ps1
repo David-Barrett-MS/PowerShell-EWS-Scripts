@@ -33,11 +33,40 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="When specified, hidden (associated) items of the folder are processed (normal items are ignored).")]
     [switch]$AssociatedItems,
 	
+    # Generic item processing
+
+    [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s). Default is a soft delete.")]
+    [switch]$Delete,
+    
+    [Parameter(Mandatory=$False,HelpMessage="When used with -Delete, forces a hard delete of the item(s).")]
+    [switch]$HardDelete,
+
     [Parameter(Mandatory=$False,HelpMessage="Adds the given property(ies) to the item(s) (must be supplied as hash table @{}).")]
     $AddItemProperties,
     
     [Parameter(Mandatory=$False,HelpMessage="Deletes the given property(ies) from the item(s).")]
     $DeleteItemProperties,
+
+    # Calendar processing
+
+    [Parameter(Mandatory=$False,HelpMessage="Accepts any matching appointment requests.")]
+    [switch]$AcceptCalendarInvite,
+
+    [Parameter(Mandatory=$False,HelpMessage="Performs a check for conflicts before accepting a meeting (if there is a conflict, the meeting will be declined)")]
+    [switch]$DeclineCalendarInviteIfConflict,
+
+    [Parameter(Mandatory=$False,HelpMessage="Declines any matching appointment requests.")]
+    [switch]$DeclineCalendarInvite,
+
+    # Contact processing
+
+    [Parameter(Mandatory=$False,HelpMessage="Actions will only apply to contact objects that have the given SMTP address as their email address.  Supports multiple SMTP addresses passed as an array.")]
+    $MatchContactAddresses,
+
+    [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted.")]
+    [switch]$DeleteContactPhoto,
+    
+    # Email processing
     
     [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as read.")]
     [switch]$MarkAsRead,
@@ -45,8 +74,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Marks the item(s) as unread.")]
     [switch]$MarkAsUnread,
 
-    [Parameter(Mandatory=$False,HelpMessage="Actions will only apply to contact objects that have the given SMTP address as their email address.  Supports multiple SMTP addresses passed as an array.")]
-    $MatchContactAddresses,
+    # Email Resend
 
     [Parameter(Mandatory=$False,HelpMessage="Resends the message (resend options must also be set).")]
     [switch]$Resend,
@@ -69,14 +97,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Resends the message to the recipient declared in the message Received: header (if present).")]
     [switch]$ResendToForInReceivedHeader,
 
-    [Parameter(Mandatory=$False,HelpMessage="If any matching contact object contains a contact photo, the photo is deleted.")]
-    [switch]$DeleteContactPhoto,
-    
-    [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s). Default is a soft delete.")]
-    [switch]$Delete,
-    
-    [Parameter(Mandatory=$False,HelpMessage="When used with -Delete, forces a hard delete of the item(s).")]
-    [switch]$HardDelete,
+    # Filters
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, only items that match the given AQS filter will be processed `r`n(see https://docs.microsoft.com/en-us/exchange/client-developer/exchange-web-services/how-to-perform-an-aqs-search-by-using-ews-in-exchange ).  Do not use any other restrictions with this option.")]
     [string]$SearchFilter,
@@ -155,6 +176,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
     $OAuthCertificate = $null,
 
+    [Parameter(Mandatory=$False,HelpMessage="If set, OAuth tokens will be stored in global variables for access in other scripts/console.  These global variable will be checked by later scripts using delegate auth to prevent additional log-in prompts.")]	
+    [switch]$GlobalTokenStorage,
+
     [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
     [switch]$OAuthDebug,
 
@@ -203,7 +227,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.3.3"
+$script:ScriptVersion = "1.3.4"
 
 if ($ForceTLS12)
 {
@@ -397,7 +421,7 @@ function LoadLibraries()
 function GetTokenWithCertificate
 {
     # We use MSAL with certificate auth
-    if (!script:msalApiLoaded)
+    if (!$script:msalApiLoaded)
     {
         $msalLocation = @()
         $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
@@ -416,9 +440,10 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
-    $authResult = $acquire.ExecuteAsync().Result
-    $script:oauthToken = $authResult
+    LogVerbose "Requesting token using certificate auth"
+    $script:oauthToken = $acquire.ExecuteAsync().Result
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
     $script:Impersonate = $true
 }
 
@@ -545,26 +570,43 @@ function JWTToPSObject
 
 function LogOAuthTokenInfo
 {
-    if ($global:OAuthResponse -eq $null)
+    if ($global:OAuthAccessToken -eq $null)
     {
         Log "No OAuth token obtained." Red
         return
     }
 
-    if ([String]::IsNullOrEmpty($global:OAuthResponse.id_token))
+    $idToken = $null
+    if (-not [String]::IsNullOrEmpty($global:OAuthAccessToken.id_token))
     {
-        Log "OAuth ID Token not present" Yellow
+        $idToken = $global:OAuthAccessToken.id_token
+    }
+    elseif (-not [String]::IsNullOrEmpty($global:OAuthAccessToken.IdToken))
+    {
+        $idToken = $global:OAuthAccessToken.IdToken
+    }
+
+    if ([String]::IsNullOrEmpty($idToken))
+    {
+        Log "OAuth ID token not present" Yellow
     }
     else
     {
-        $global:idTokenDecoded = JWTToPSObject($global:OAuthResponse.id_token)
+        $global:idTokenDecoded = JWTToPSObject($idToken)
         Log "OAuth ID Token (`$idTokenDecoded):" Yellow
         Log $global:idTokenDecoded Yellow
     }
 
-    $global:accessTokenDecoded = JWTToPSObject($global:OAuthResponse.access_token)
-    Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
-    Log $global:accessTokenDecoded Yellow
+    if (-not [String]::IsNullOrEmpty($global:OAuthAccessToken))
+    {
+        $global:accessTokenDecoded = JWTToPSObject($global:OAuthAccessToken)
+        Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
+        Log $global:accessTokenDecoded Yellow
+    }
+    else
+    {
+        Log "OAuth access token not present" Red
+    }
 }
 
 function GetOAuthCredentials
@@ -603,18 +645,40 @@ function GetOAuthCredentials
         }
         else
         {
-            GetTokenViaCode
+            if ($GlobalTokenStorage -and $script:oauthToken -eq $null)
+            {
+                # Check if we have token variable set globally
+                if ($global:oAuthPersistAppId -eq $OAuthClientId)
+                {
+                    $script:oAuthToken = $global:oAuthPersistToken
+                    $script:oauthTokenAcquireTime = $global:oAuthPersistTokenAcquireTime
+                }
+                RenewOAuthToken
+            }
+            else
+            {
+                GetTokenViaCode
+            }
         }
     }
+
+    if ($GlobalTokenStorage -or $OAuthDebug)
+    {
+        # Store the OAuth in a global variable for later access
+        $global:oAuthPersistToken = $script:oAuthToken
+        $global:oAuthPersistAppId = $OAuthClientId
+        $global:oAuthPersistTokenAcquireTime = $script:oauthTokenAcquireTime
+    } 
+
     if ($OAuthDebug)
     {
-        $global:OAuthResponse = $script:oAuthToken
-        LogVerbose "`$oAuthResponse contains token response"
+        LogVerbose "`$oAuthPersistToken contains token response"
         $global:OAuthAccessToken = $script:oAuthAccessToken
         LogVerbose "`$OAuthAccessToken: `r`n$($global:OAuthAccessToken)"
         LogOAuthTokenInfo
     }
-    
+
+   
 
     # If we get here we have a valid token
     $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
@@ -622,6 +686,7 @@ function GetOAuthCredentials
 }
 
 $script:oAuthDebugStop = $false
+$script:oAuthDebugStopCount = 0
 function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
@@ -653,17 +718,20 @@ function ApplyEWSOAuthCredentials
             }
             Write-Host "Token expired, continuing..." -ForegroundColor Cyan
             $oAuthDebugStop = $false
-            $DebugTokenRenewal--
+            $script:oAuthDebugStopCount++
         }
         else
         {
-            $script:oAuthDebugStop = $true
+            if ($DebugTokenRenewal-$script:oAuthDebugStopCount -gt 0)
+            {
+                $script:oAuthDebugStop = $true
+            }
         }
     }
     
     if ($OAuthCertificate -ne $null)
     {
-        if ( [DateTime]::UtcNow -ge $script:oauthToken.ExpiresOn.UtcDateTime) { return }
+        if ( [DateTime]::UtcNow -lt $script:oauthToken.ExpiresOn.UtcDateTime) { return }
     }
     elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
@@ -887,6 +955,114 @@ $TraceListenerClass			        }
         $service.TraceListener = $script:Tracer
     }
 }
+
+function CreateService($smtpAddress, $impersonatedAddress = "")
+{
+    # Creates and returns an ExchangeService object to be used to access mailboxes
+
+    # First of all check to see if we have a service object for this mailbox already
+    if ($script:services -eq $null)
+    {
+        $script:services = @{}
+    }
+    if ($script:services.ContainsKey($smtpAddress))
+    {
+        return $script:services[$smtpAddress]
+    }
+
+    # Create new service
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
+
+    # Do we need to use OAuth?
+    if ($Office365) { $OAuth = $true }
+    if ($OAuth)
+    {
+        $exchangeService.Credentials = GetOAuthCredentials
+        if ($exchangeService.Credentials -eq $null)
+        {
+            # OAuth failed
+            return $null
+        }
+    }
+    else
+    {
+        # Set credentials if specified, or use logged on user.
+        if ($Credentials -ne $Null)
+        {
+            LogVerbose "Applying given credentials: $($Credentials.UserName)"
+            $exchangeService.Credentials = $Credentials.GetNetworkCredential()
+        }
+        else
+        {
+	        LogVerbose "Using default credentials"
+            $exchangeService.UseDefaultCredentials = $true
+        }
+    }
+
+    # Set EWS URL if specified, or use autodiscover if no URL specified.
+    if ($EwsUrl -or $Office365)
+    {
+        if ($Office365) { $EwsUrl = "https://outlook.office365.com/EWS/Exchange.asmx" }
+    	$exchangeService.URL = New-Object Uri($EwsUrl)
+    }
+    else
+    {
+    	try
+    	{
+		    LogVerbose "Performing autodiscover for $smtpAddress"
+		    if ( $AllowInsecureRedirection )
+		    {
+			    $exchangeService.AutodiscoverUrl($smtpAddress, {$True})
+		    }
+		    else
+		    {
+			    $exchangeService.AutodiscoverUrl($smtpAddress)
+		    }
+		    if ([string]::IsNullOrEmpty($exchangeService.Url))
+		    {
+			    Log "$smtpAddress : autodiscover failed" Red
+			    return $Null
+		    }
+		    LogVerbose "EWS Url found: $($exchangeService.Url)"
+    	}
+    	catch
+    	{
+            Log "$smtpAddress : error occurred during autodiscover: $($Error[0])" Red
+            return $null
+    	}
+    }
+ 
+    if ([String]::IsNullOrEmpty($impersonatedAddress))
+    {
+        $impersonatedAddress = $smtpAddress
+    }
+    $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
+    if ($Impersonate)
+    {
+		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
+	}
+
+    # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
+    if (![String]::IsNullOrEmpty($EWSManagedApiPath))
+    {
+        CreateTraceListener $exchangeService
+        if ($script:Tracer)
+        {
+            $exchangeService.TraceListener = $script:Tracer
+            $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+            $exchangeService.TraceEnabled = $True
+        }
+        else
+        {
+            Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
+        }
+    }
+
+    $script:services.Add($smtpAddress, $exchangeService)
+    LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
+    return $exchangeService
+}
+
 #>** EWS/OAUTH FUNCTIONS END **#
 
 Function Throttled()
@@ -1127,109 +1303,6 @@ function ThrottledItemUpdate()
     }
     catch {}
     return $false
-}
-
-function CreateService($smtpAddress)
-{
-    # Creates and returns an ExchangeService object to be used to access mailboxes
-
-    # First of all check to see if we have a service object for this mailbox already
-    if ($script:services -eq $null)
-    {
-        $script:services = @{}
-    }
-    if ($script:services.ContainsKey($smtpAddress))
-    {
-        return $script:services[$smtpAddress]
-    }
-
-    # Create new service
-    if ($Exchange2007)
-    {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2007_SP1)
-    }
-    else
-    {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2013)
-    }
-
-    # Do we need to use OAuth?
-    if ($OAuth)
-    {
-        $exchangeService.Credentials = GetOAuthCredentials
-        if ($exchangeService.Credentials -eq $null)
-        {
-            # OAuth failed
-            return $null
-        }
-    }
-    else
-    {
-        # Set credentials if specified, or use logged on user.
-        if ($Credential -ne $Null)
-        {
-            LogVerbose "Applying given credentials: $($Credential.UserName)"
-            $exchangeService.Credentials = $Credential.GetNetworkCredential()
-        }
-        else
-        {
-	        LogVerbose "Using default credentials"
-            $exchangeService.UseDefaultCredentials = $true
-        }
-    }
-
-
-
-    # Set EWS URL if specified, or use autodiscover if no URL specified.
-    if ($EwsUrl -or $Office365)
-    {
-        if ($Office365) { $EwsUrl = "https://outlook.office365.com/EWS/Exchange.asmx" }
-    	$exchangeService.URL = New-Object Uri($EwsUrl)
-    }
-    else
-    {
-    	try
-    	{
-		    LogVerbose "Performing autodiscover for $smtpAddress"
-		    if ( $AllowInsecureRedirection )
-		    {
-			    $exchangeService.AutodiscoverUrl($smtpAddress, {$True})
-		    }
-		    else
-		    {
-			    $exchangeService.AutodiscoverUrl($smtpAddress)
-		    }
-		    if ([string]::IsNullOrEmpty($exchangeService.Url))
-		    {
-			    Log "$smtpAddress : autodiscover failed" Red
-			    return $Null
-		    }
-		    LogVerbose "EWS Url found: $($exchangeService.Url)"
-    	}
-    	catch
-    	{
-            Log "$smtpAddress : error occurred during autodiscover: $($Error[0])" Red
-            return $null
-    	}
-    }
- 
-    $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
-    if ($Impersonate)
-    {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
-	}
-
-    # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
-    if (![String]::IsNullOrEmpty($EWSManagedApiPath))
-    {
-        CreateTraceListener $exchangeService
-        $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
-        $exchangeService.TraceEnabled = $True
-    }
-
-    $script:services.Add($smtpAddress, $exchangeService)
-    LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
-    return $exchangeService
 }
 
 Function AddItemProperties($item)
@@ -2296,6 +2369,19 @@ function ResendItem()
     return $false
 }
 
+Function AppointmentHasConflict($meetingInvitation)
+{
+    # Return $True if there is a conflict, $False otherwise
+
+    Log "Checking for appointment conflict"
+    $global:debugInvite = $meetingInvitation
+
+    $calendarView = New-Object Microsoft.Exchange.WebServices.Data.CalendarView($meetingInvitation.Start, $meetingInvitation.End, 2)
+    $items = $script:service.FindAppointments([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Calendar, $calendarView)
+    $global:debugAvailability = $items
+    return $items.Count -gt 1
+}
+
 Function ProcessItem()
 {
 	# Apply updates to the given item
@@ -2316,7 +2402,7 @@ Function ProcessItem()
 
     if ($MaximumNumberOfItemsToProcess -gt 0)
     {
-        if ($script:itemsMatched -ge $MaximumNumberOfItemsToProcess)
+        if ($script:itemsMatched -gt $MaximumNumberOfItemsToProcess)
         {
             # We've processed maximum number of items, so turn -WhatIf on            
             $script:WhatIf = $true
@@ -2338,6 +2424,33 @@ Function ProcessItem()
     if ($ListMatches)
     {
         $item
+    }
+
+    $madeChanges = $false
+
+    # Check calendar invitation processing
+    if ($item.ItemClass.Equals("IPM.Schedule.Meeting.Request"))
+    {
+        if ($AcceptCalendarInvite)
+        {
+            if ($DeclineCalendarInviteIfConflict -and (AppointmentHasConflict $item))
+            {
+                Log "Declining calendar invitation due to conflict"
+                if (!$WhatIf) { $item.Decline($true) | out-null }
+            }
+            else
+            {
+                Log "Accepting calendar invitation"
+                if (!$WhatIf) { $item.Accept($true) | out-null }
+            }
+            $madeChanges = $true
+        }
+        elseif ($DeclineCalendarInvite)
+        {
+            Log "Declining calendar invitation"
+            if (!$WhatIf) { $item.Decline($true) | out-null }
+            $madeChanges = $true
+        }
     }
 
     # Check for Resend
@@ -2388,8 +2501,6 @@ Function ProcessItem()
 
         return # If Delete is specified, any other parameter is irrelevant
     }
-
-    $madeChanges = $false
 
     if ( DeleteItemProperties $item ) { $madeChanges = $True }
     if ( AddItemProperties $item ) { $madeChanges = $True }
@@ -2588,6 +2699,14 @@ Function InitialiseItemPropertySet()
                 $script:RequiredPropSet.Add($propMustMatch)
             }
         }
+    }
+
+    if ($DeclineCalendarInviteIfConflict)
+    {
+        # To check for conflicts, we need start and end time of the invitation
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::Start)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::End)
+        $script:RequiredPropSet.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::ParentFolderId)
     }
 
     InitRecipientMatchInfo
