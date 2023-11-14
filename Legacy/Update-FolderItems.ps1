@@ -52,8 +52,14 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Accepts any matching appointment requests.")]
     [switch]$AcceptCalendarInvite,
 
-    [Parameter(Mandatory=$False,HelpMessage="Performs a check for conflicts before accepting a meeting (if there is a conflict, the meeting will be declined)")]
+    [Parameter(Mandatory=$False,HelpMessage="Performs a check for conflicts before accepting a meeting (if there is a conflict, the meeting will be declined).  Must be used with -AcceptCalendarInvite.")]
     [switch]$DeclineCalendarInviteIfConflict,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, the subject is removed from the appointment (only for the accepted meeting).")]
+    [switch]$DeleteSubject,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, the organizer is appended to the appointment subject (only for the accepted meeting).")]
+    [switch]$AddOrganizerToSubject,
 
     [Parameter(Mandatory=$False,HelpMessage="Declines any matching appointment requests.")]
     [switch]$DeclineCalendarInvite,
@@ -227,7 +233,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.3.4"
+$script:ScriptVersion = "1.3.5"
 
 if ($ForceTLS12)
 {
@@ -2373,12 +2379,9 @@ Function AppointmentHasConflict($meetingInvitation)
 {
     # Return $True if there is a conflict, $False otherwise
 
-    Log "Checking for appointment conflict"
-    $global:debugInvite = $meetingInvitation
-
+    LogVerbose "Checking for appointment conflict"
     $calendarView = New-Object Microsoft.Exchange.WebServices.Data.CalendarView($meetingInvitation.Start, $meetingInvitation.End, 2)
     $items = $script:service.FindAppointments([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Calendar, $calendarView)
-    $global:debugAvailability = $items
     return $items.Count -gt 1
 }
 
@@ -2441,7 +2444,46 @@ Function ProcessItem()
             else
             {
                 Log "Accepting calendar invitation"
-                if (!$WhatIf) { $item.Accept($true) | out-null }
+                $acceptedMeeting = $null
+                if (!$WhatIf) { $acceptedMeeting = $item.Accept($true) }
+
+                # We only process the subject when the meeting is accepted, as when declined there is nothing to update...
+                if ($acceptedMeeting -ne $null)
+                {
+                    $propSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,[Microsoft.Exchange.WebServices.Data.AppointmentSchema]::Organizer,
+                        [Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject)
+                    $meeting = ThrottledItemBind $acceptedMeeting.Appointment.Id $propSet
+                    $global:debugMeeting = $meeting
+
+                    if ($meeting -ne $null)
+                    {
+                        $meetingSubject = $meeting.Subject
+                        if ($DeleteSubject)
+                        {
+                            LogVerbose "Deleting meeting subject"
+                            $meetingSubject = ""
+                        }
+
+                        if ($AddOrganizerToSubject)
+                        {
+                            LogVerbose "Adding organizer to subject"
+                            if (![String]::IsNullOrEmpty($meetingSubject)) { $meetingSubject = "$meetingSubject - " }
+                            $meetingSubject = "$meetingSubject$($meeting.Organizer.Name)"
+                        }
+
+                        if ($meetingSubject -ne $meeting.Subject)
+                        {
+                            # Update the appointment with the changes
+                            Log "Updating meeting subject to: $meetingSubject"
+                            $meeting.Subject = $meetingSubject
+                            ThrottledItemUpdate $meeting | out-null
+                        }
+                    }
+                    else
+                    {
+                        Log "Failed to post process meeting as unable to bind to appointment" Red
+                    }
+                }
             }
             $madeChanges = $true
         }
