@@ -184,14 +184,16 @@ param (
 #>** LOGGING PARAMETERS END **#
 
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
-    [int]$BatchSize = 100
+    [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.3.2"
+$script:ScriptVersion = "1.3.3"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
 
 #>** LOGGING FUNCTIONS START **#
+$scriptStartTime = [DateTime]::Now
+
 Function LogToFile([string]$Details)
 {
 	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
@@ -898,7 +900,9 @@ $TraceListenerClass			        }
 		    }
 "@
 
-        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        if ("EWSTracer" -as [type]) {} else {
+            Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        }
         $script:Tracer=[EWSTracer]::new()
 
         # Attach the trace listener to the Exchange service
@@ -1022,8 +1026,18 @@ Function DecreaseBatchSize()
         $DecreaseMultiplier = 0.8
     )
 
-    $script:currentBatchSize = [int]($script:currentBatchSize * $DecreaseMultiplier)
-    if ($script:currentBatchSize -lt 50) { $script:currentBatchSize = 50 }
+    if ($script:currentBatchSize -le 10) { return }
+
+    if ($script:currentBatchSize -gt 50)
+    {
+        $script:currentBatchSize = [int]($script:currentBatchSize * $DecreaseMultiplier)
+    }
+    else
+    {
+        $script:currentBatchSize = [int]($script:currentBatchSize - 10)
+    }
+
+    if ($script:currentBatchSize -lt 10) { $script:currentBatchSize = 10 }
     LogVerbose "Retrying with smaller batch size of $($script:currentBatchSize)"
 }
 
@@ -1275,17 +1289,20 @@ Function ThrottledBatchMove()
         {
             if (!$WhatIf)
             {
+                $stopWatch = [Diagnostics.Stopwatch]::StartNew()
                 if ( $Copy )
                 {
                     LogVerbose "Sending batch request to copy $($moveIds.Count) items ($($ItemsToMove.Count) remaining)"
 			        $results = $script:sourceService.CopyItems( $moveIds, $TargetFolderId, $false )
+                    $stopWatch.Stop()
                 }
                 else
                 {
                     LogVerbose "Sending batch request to move $($moveIds.Count) items ($($ItemsToMove.Count) remaining)"
 			        $results = $script:sourceService.MoveItems( $moveIds, $TargetFolderId, $false)
+                    $stopWatch.Stop()
                 }
-                LogVerbose "Batch request completed"
+                LogVerbose "Batch request completed in $($stopWatch.Elapsed)"
             }
         }
         catch
@@ -1293,7 +1310,7 @@ Function ThrottledBatchMove()
             if ( Throttled )
             {
                 # We've been throttled, so we reduce batch size (to a minimum size of 50) and try again
-                if ($script:currentBatchSize -gt 50)
+                if ($script:currentBatchSize -gt 10)
                 {
                     DecreaseBatchSize
                 }
@@ -1321,10 +1338,10 @@ Function ThrottledBatchMove()
                             Exit
                         }
                     }
-                    elseif ($Error[0].Exception.InnerException.ToString().Contains("The operation has timed out"))
+                    elseif ($Error[0].Exception.InnerException -and $Error[0].Exception.InnerException.ToString().Contains("The operation has timed out"))
                     {
                         # We've probably been throttled, so we'll reduce the batch size and try again
-                        if ($script:currentBatchSize -gt 50)
+                        if ($script:currentBatchSize -gt 10)
                         {
                             LogVerbose "Timeout error received"
                             DecreaseBatchSize
@@ -2045,9 +2062,33 @@ function GetFolderPath($Folder)
         # Note that we can't use a PowerShell hash table to build a list of folder Ids, as the hash table is case-insensitive
         # We use a .Net Dictionary object instead
         $script:folderCache = New-Object 'System.Collections.Generic.Dictionary[System.String,System.Object]'
+
+        if ([String]::IsNullOrEmpty($TargetMailbox) -or ($TargetMailbox -eq $SourceMailbox))
+        {
+            # Retrieve Top of Information store for both primary and archive mailbox so that we can distinguish between them easily
+            $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $sourceMbx )
+            $primaryRoot = ThrottledFolderBind $folderId $script:requiredFolderProperties $Folder.Service
+            $script:FolderCache.Add($primaryRoot.Id.UniqueId, $primaryRoot)
+
+            $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveMsgFolderRoot, $sourceMbx )
+            $archiveRoot = ThrottledFolderBind $folderId $script:requiredFolderProperties $Folder.Service
+            if ($archiveRoot)
+            {
+                $archiveRoot.DisplayName = "ARCHIVE($($archiveRoot.DisplayName))"
+                $script:FolderCache.Add($archiveRoot.Id.UniqueId, $archiveRoot)
+            }
+        }
     }
 
-    $parentFolder = ThrottledFolderBind $Folder.Id $script:requiredFolderProperties $Folder.Service
+    if ($script:folderCache.ContainsKey($Folder.Id.UniqueId))
+    {
+        $parentFolder = $script:folderCache[$Folder.Id.UniqueId]
+    }
+    else
+    {
+        $parentFolder = ThrottledFolderBind $Folder.Id $script:requiredFolderProperties $Folder.Service
+    }
+
     $folderPath = $Folder.DisplayName
     $parentFolderId = $Folder.Id
     while ($parentFolder.ParentFolderId -ne $parentFolderId)
@@ -2068,6 +2109,7 @@ function GetFolderPath($Folder)
         $folderPath = $parentFolder.DisplayName + "\" + $folderPath
         $parentFolderId = $parentFolder.Id
     }
+
     return $folderPath
 }
 
