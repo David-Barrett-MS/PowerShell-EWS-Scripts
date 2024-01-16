@@ -35,6 +35,9 @@ param (
 	
     # Generic item processing
 
+    [Parameter(Mandatory=$False,HelpMessage="If specified, all EWS first class properties will be requested when retrieving items.  Useful when using -ListMatches.")]
+    [switch]$LoadAllItemProperties,
+    
     [Parameter(Mandatory=$False,HelpMessage="Deletes the item(s). Default is a soft delete.")]
     [switch]$Delete,
     
@@ -233,7 +236,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, no items will be changed (but any processing that would occur will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.3.5"
+$script:ScriptVersion = "1.3.6"
 
 if ($ForceTLS12)
 {
@@ -248,6 +251,8 @@ else
 # Define our functions
 
 #>** LOGGING FUNCTIONS START **#
+$scriptStartTime = [DateTime]::Now
+
 Function LogToFile([string]$Details)
 {
 	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
@@ -323,6 +328,7 @@ Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" 
 
 Function LogVerbose([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
     if ( !$VerboseLogFile -and !$DebugLogFile -and ($VerbosePreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
@@ -330,6 +336,7 @@ Function LogVerbose([string]$Details)
 
 Function LogDebug([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
     if (!$DebugLogFile -and ($DebugPreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
@@ -447,10 +454,28 @@ function GetTokenWithCertificate
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
     LogVerbose "Requesting token using certificate auth"
-    $script:oauthToken = $acquire.ExecuteAsync().Result
+    
+    try
+    {
+        $script:oauthToken = $acquire.ExecuteAsync().Result
+    }
+    catch
+    {
+        Log "Failed to obtain OAuth token: $Error" Red
+        exit # Failed to obtain a token
+    }
+
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
-    $script:Impersonate = $true
+    if ($script:oAuthAccessToken -ne $null)
+    {
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        $script:Impersonate = $true
+        return
+    }
+
+    # If we get here, we don't have a token so can't continue
+    Log "Failed to obtain OAuth token (no error thrown)" Red
+    exit
 }
 
 function GetTokenViaCode
@@ -954,7 +979,9 @@ $TraceListenerClass			        }
 		    }
 "@
 
-        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        if ("EWSTracer" -as [type]) {} else {
+            Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        }
         $script:Tracer=[EWSTracer]::new()
 
         # Attach the trace listener to the Exchange service
@@ -2706,8 +2733,15 @@ Function InitialiseItemPropertySet()
     {
         return $script:RequiredPropSet
     }
-    $script:RequiredPropSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,[Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject,
-        [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsRead,[Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,[Microsoft.Exchange.WebServices.Data.ContactSchema]::HasPicture)
+    if ($LoadAllItemProperties)
+    {
+        $script:RequiredPropSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::FirstClassProperties)
+    }
+    else
+    {
+        $script:RequiredPropSet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,[Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject,
+            [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsRead,[Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass,[Microsoft.Exchange.WebServices.Data.ContactSchema]::HasPicture)
+    }
 
     if ($CreatedAfter -or $CreatedBefore)
     {
