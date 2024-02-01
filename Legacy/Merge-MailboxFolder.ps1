@@ -186,7 +186,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.3.4"
+$script:ScriptVersion = "1.3.5"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
