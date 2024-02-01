@@ -1318,11 +1318,11 @@ Function ThrottledBatchMove()
                     else
                     {
                         LogVerbose "Added to move/copy batch: $($ItemsToMove[$i])"
-                        if (!$Copy -and $script:publicFolders)
-                        {
-                            $deleteIds.Add($ItemsToMove[$i])
-                            LogVerbose "Added to delete (due to public folder move): $($ItemsToMove[$i])"
-                        }
+                        #if (!$Copy -and $script:publicFolders)
+                        #{
+                        #    $deleteIds.Add($ItemsToMove[$i])
+                        #    LogVerbose "Added to delete (due to public folder move): $($ItemsToMove[$i])"
+                        #}
                     }
                 }
             }
