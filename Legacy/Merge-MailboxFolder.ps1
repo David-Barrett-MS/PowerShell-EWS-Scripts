@@ -186,7 +186,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.3.3"
+$script:ScriptVersion = "1.3.4"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -269,6 +269,7 @@ Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" 
 
 Function LogVerbose([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
     if ( !$VerboseLogFile -and !$DebugLogFile -and ($VerbosePreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
@@ -276,6 +277,7 @@ Function LogVerbose([string]$Details)
 
 Function LogDebug([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
     if (!$DebugLogFile -and ($DebugPreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
@@ -315,6 +317,10 @@ Function ReportError($Context)
 
 
 #>** EWS/OAUTH FUNCTIONS START **#
+
+# These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
+# EWS/OAuth library version: 1.0.1
+
 function LoadLibraries()
 {
     param (
@@ -335,6 +341,7 @@ function LoadLibraries()
         {
             if ($dll -eq $null)
             {
+                Log "$dllName not found in current directory - searching Program Files folders" Yellow
 	            $dll = Get-ChildItem -Recurse "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
 	            if (!$dll)
 	            {
@@ -393,10 +400,28 @@ function GetTokenWithCertificate
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
     LogVerbose "Requesting token using certificate auth"
-    $script:oauthToken = $acquire.ExecuteAsync().Result
+    
+    try
+    {
+        $script:oauthToken = $acquire.ExecuteAsync().Result
+    }
+    catch
+    {
+        Log "Failed to obtain OAuth token: $Error" Red
+        exit # Failed to obtain a token
+    }
+
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
-    $script:Impersonate = $true
+    if ($script:oAuthAccessToken -ne $null)
+    {
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        $script:Impersonate = $true
+        return
+    }
+
+    # If we get here, we don't have a token so can't continue
+    Log "Failed to obtain OAuth token (no error thrown)" Red
+    exit
 }
 
 function GetTokenViaCode
@@ -688,7 +713,7 @@ function ApplyEWSOAuthCredentials
     elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
-    LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
+    LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
 
@@ -697,7 +722,7 @@ function ApplyEWSOAuthCredentials
         $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
         if ( [DateTime]::UtcNow -ge $tokenExpire)
         {
-            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed (certificate auth)"
+            Log "OAuth Token renewal failed (certificate auth)"
             exit # We no longer have access to the mailbox, so we stop here
         }
     }
@@ -705,20 +730,20 @@ function ApplyEWSOAuthCredentials
     {
         if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
         { 
-            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
+            Log "OAuth Token renewal failed"
             exit # We no longer have access to the mailbox, so we stop here
         }
         $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
     }
 
-    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $tokenExpire"
+    Log "OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
             $service.Credentials = $exchangeCredentials
         }
-        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
+        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
 }
 
@@ -806,7 +831,14 @@ Function TrustAllCerts()
     [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
 }
 
-Function CreateTraceListener($service)
+Function SetClientRequestId($exchangeService)
+{
+    # Apply unique client-request-id to the EWS service object
+
+    $exchangeService.ClientRequestId = (New-Guid).ToString()
+}
+
+Function CreateTraceListener($exchangeService)
 {
     # Create trace listener to capture EWS conversation (useful for debugging)
 
@@ -906,7 +938,7 @@ $TraceListenerClass			        }
         $script:Tracer=[EWSTracer]::new()
 
         # Attach the trace listener to the Exchange service
-        $service.TraceListener = $script:Tracer
+        $exchangeService.TraceListener = $script:Tracer
     }
 }
 
@@ -925,7 +957,8 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     }
 
     # Create new service
-    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2016)
+    $exchangeService.UserAgent = "https://github.com/David-Barrett-MS/PowerShell-EWS-Scripts"
 
     # Do we need to use OAuth?
     if ($Office365) { $OAuth = $true }
@@ -1012,6 +1045,9 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
         }
     }
 
+    SetClientRequestId $exchangeService
+    $exchangeService.ReturnClientRequestId = $true
+
     $script:services.Add($smtpAddress, $exchangeService)
     LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
     return $exchangeService
@@ -1073,15 +1109,15 @@ function ThrottledFolderBind()
 
     if ($folderId -eq $null)
     {
-        Log "[ThrottledFolderBind]Empty folder Id passed to ThrottledFolderBind" Red
+        Log "Empty folder Id passed to ThrottledFolderBind" Red
         return $null
     }
 
-    LogVerbose "[ThrottledFolderBind]Attempting to bind to folder $folderId"
+    LogVerbose "Attempting to bind to folder $folderId"
     $folder = $null
     if ($exchangeService -eq $null)
     {
-        Log "[ThrottledFolderBind]No ExchangeService object set" Red
+        Log "No ExchangeService object set" Red
         return $null
     }
     if ($propset -eq $null)
@@ -1092,10 +1128,11 @@ function ThrottledFolderBind()
     try
     {
         ApplyEWSOauthCredentials
+        SetClientRequestId $exchangeService
         $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
         if (!($folder -eq $null))
         {
-            LogVerbose "[ThrottledFolderBind]Successfully bound to folder $folderId"
+            LogVerbose "Successfully bound to folder $folderId"
         }
         return $folder
     }
@@ -1106,10 +1143,11 @@ function ThrottledFolderBind()
         try
         {
             ApplyEWSOauthCredentials
+            SetClientRequestId $exchangeService
             $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
             if (!($folder -eq $null))
             {
-                LogVerbose "[ThrottledFolderBind]Successfully bound to folder $folderId"
+                LogVerbose "Successfully bound to folder $folderId"
             }
             return $folder
         }
@@ -1130,12 +1168,14 @@ Function RemoveProcessedItemsFromList()
         $requestedItems,
         $results,
         $suppressErrors = $false,
-        $Items
+        $Items,
+        $keepItemsIfNoResults = $false
     )
 
     if ($results -ne $null)
     {
         $failed = 0
+        $permanentFailures = 0
         for ($i = 0; $i -lt $requestedItems.Count; $i++)
         {
             if ($results[$i].ErrorCode -eq "NoError")
@@ -1160,6 +1200,7 @@ Function RemoveProcessedItemsFromList()
                         {
                             Log "Permanent error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item: $($requestedItems[$i].UniqueId)" Red
                         }
+                        $permanentFailures++
                     }
                 }
                 else
@@ -1188,6 +1229,7 @@ Function RemoveProcessedItemsFromList()
                             {
                                 Log "Permanent error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item: $($requestedItems[$i].UniqueId)" Red
                             }
+                            $permanentFailures++
                         }
                     }
                 }
@@ -1197,16 +1239,23 @@ Function RemoveProcessedItemsFromList()
     }
     else
     {
-        Log "No results returned - assuming all items processed" White
-        for ($i = 0; $i -lt $requestedItems.Count; $i++)
+        if ($keepItemsIfNoResults)
         {
-            [void]$Items.Remove($requestedItems[$i])
+            Log "No results returned, whole batch will be retried" Yellow
+        }
+        else
+        {
+            Log "No results returned - assuming all items processed" White
+            for ($i = 0; $i -lt $requestedItems.Count; $i++)
+            {
+                [void]$Items.Remove($requestedItems[$i])
+            }
         }
 
     }
     if ( ($failed -gt 0) -and !$suppressErrors )
     {
-        Log "$failed items reported error during batch request (if throttled, some failures are expected, and will be retried)" Yellow
+        Log "$failed items reported error during batch request ($permanentFailures not retriable)" Yellow
     }
     else
     {
@@ -1268,11 +1317,12 @@ Function ThrottledBatchMove()
                     }
                     else
                     {
+                        LogVerbose "Added to move/copy batch: $($ItemsToMove[$i])"
                         if (!$Copy -and $script:publicFolders)
                         {
                             $deleteIds.Add($ItemsToMove[$i])
+                            LogVerbose "Added to delete (due to public folder move): $($ItemsToMove[$i])"
                         }
-                        LogVerbose "Added to batch: $($ItemsToMove[$i])"
                     }
                 }
             }
@@ -1290,18 +1340,18 @@ Function ThrottledBatchMove()
             if (!$WhatIf)
             {
                 $stopWatch = [Diagnostics.Stopwatch]::StartNew()
+                SetClientRequestId $script:sourceService
                 if ( $Copy )
                 {
                     LogVerbose "Sending batch request to copy $($moveIds.Count) items ($($ItemsToMove.Count) remaining)"
 			        $results = $script:sourceService.CopyItems( $moveIds, $TargetFolderId, $false )
-                    $stopWatch.Stop()
                 }
                 else
                 {
                     LogVerbose "Sending batch request to move $($moveIds.Count) items ($($ItemsToMove.Count) remaining)"
 			        $results = $script:sourceService.MoveItems( $moveIds, $TargetFolderId, $false)
-                    $stopWatch.Stop()
                 }
+                $stopWatch.Stop()
                 LogVerbose "Batch request completed in $($stopWatch.Elapsed)"
             }
         }
@@ -1309,15 +1359,8 @@ Function ThrottledBatchMove()
         {
             if ( Throttled )
             {
-                # We've been throttled, so we reduce batch size (to a minimum size of 50) and try again
-                if ($script:currentBatchSize -gt 10)
-                {
-                    DecreaseBatchSize
-                }
-                else
-                {
-                    #$finished = $true
-                }
+                
+                # We need to resend the request as previous request would not have been processed
             }
             else
             {                
@@ -1348,6 +1391,7 @@ Function ThrottledBatchMove()
                         }
                         else
                         {
+                            Log "Timeout error received and batch size at minimum, so halting processing" Red
                             $finished = $true
                         }
                     }
@@ -1398,7 +1442,7 @@ Function ThrottledBatchMove()
 
         if (!$WhatIf)
         {
-            RemoveProcessedItemsFromList $moveIds $results $false $ItemsToMove
+            RemoveProcessedItemsFromList $moveIds $results $false $ItemsToMove !$Copy
 
             if ($script:deleteIds.Count -gt 0)
             {
@@ -1426,7 +1470,7 @@ Function ThrottledBatchMove()
         }
 
         $percentComplete = ( ($totalItems - $ItemsToMove.Count) / $totalItems ) * 100
-        Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
+        Write-Progress -Activity $progressActivity -Status "$($percentComplete.ToString("0.#"))% complete" -PercentComplete $percentComplete
 
         if ($ItemsToMove.Count -eq 0)
         {
@@ -1440,8 +1484,6 @@ Function ThrottledBatchMove()
         # We have a list of items to delete (i.e. Move succeeded, but we are processing public folders so need to ensure that the source item no longer exists)
         ThrottledBatchDelete $script:deleteIds -SuppressNotFoundErrors $true
     }
-
-    # Restore the throttling delay (in case we changed it)
 }
 
 Function ThrottledBatchDelete()
@@ -1487,6 +1529,7 @@ Function ThrottledBatchDelete()
         try
         {
             LogVerbose "Sending batch request to delete $($deleteIds.Count) items ($($ItemsToDelete.Count) remaining)"
+            SetClientRequestId $script:sourceService
 			$results = $script:sourceService.DeleteItems( $deleteIds, [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, [Microsoft.Exchange.WebServices.Data.SendCancellationsMode]::SendToNone, $null )
             $consecutiveErrors = 0 # Reset the consecutive error count, as if we reach this point then this request succeeded with no error
         }
@@ -1556,18 +1599,18 @@ Function IsFolderExcluded()
                 {
                     if ($prop.Value -eq 2)
                     {
-                        Log "[IsFolderExcluded]Ignoring search folder: $folderPath"
+                        Log "Ignoring search folder: $folderPath"
                         return $true
                     }
-                    LogVerbose "[IsFolderExcluded]Folder is of type: $($prop.Value)"
+                    LogVerbose "Folder is of type: $($prop.Value)"
                 }
             }
-            LogVerbose "[IsFolderExcluded]Folder not identified as search folder"
+            LogVerbose "Folder not identified as search folder"
         }
     }
     else
     {
-        LogVerbose "[IsFolderExcluded]No extended properties for folder, can't test for search folder"
+        LogVerbose "No extended properties for folder, can't test for search folder"
     }
 
     if ($ExcludeFolderList)
@@ -1576,7 +1619,7 @@ Function IsFolderExcluded()
         $rootFolderName = $script:sourceMailboxRoot.DisplayName.ToLower()
         ForEach ($excludedFolder in $ExcludeFolderList)
         {
-            LogDebug "[IsFolderExcluded]Comparing $($folderPath.ToLower()) to $($excludedFolder.ToLower())"
+            LogDebug "Comparing $($folderPath.ToLower()) to $($excludedFolder.ToLower())"
             if ($folderPath.ToLower().EndsWith($excludedFolder.ToLower()))
             {
                 # This could be a match
@@ -1588,7 +1631,7 @@ Function IsFolderExcluded()
                 }
                 if ($pathsMatch)
                 {
-                    Log "[IsFolderExcluded]Excluded folder being skipped: $folderPath"
+                    Log "Excluded folder being skipped: $folderPath"
                     return $true
                 }
             }
@@ -1607,17 +1650,17 @@ Function MoveItems()
 	
     if ( $SourceFolderObject -eq $null )
     {
-        Log "[MoveItems]Source folder is null, cannot move items" Red
+        Log "Source folder is null, cannot move items" Red
         return
     }	
     if ( $TargetFolderObject -eq $null )
     {
-        Log "[MoveItems]Target folder is null, cannot move items" Red
+        Log "Target folder is null, cannot move items" Red
         return
     }	
 	if ( $SourceFolderObject.Id -eq $TargetFolderObject.Id )
 	{
-		Log "[MoveItems]Cannot move or copy from/to the same folder (source folder Id and target folder Id are the same)" Red
+		Log "Cannot move or copy from/to the same folder (source folder Id and target folder Id are the same)" Red
 		return
 	}
 	
@@ -1631,7 +1674,7 @@ Function MoveItems()
         $action = "Move"
         $actioning = "Moving"
     }
-	Log "[MoveItems]$actioning from $($SourceMailbox):$(GetFolderPath($SourceFolderObject)) to $($TargetMailbox):$(GetFolderPath($TargetFolderObject))" White
+	Log "$actioning from $($SourceMailbox):$(GetFolderPath($SourceFolderObject)) to $($TargetMailbox):$(GetFolderPath($TargetFolderObject))" White
 	
 	# Set parameters - we will process in batches of 500 for the FindItems call
 	$Offset = 0
@@ -1645,7 +1688,7 @@ Function MoveItems()
     $i = 0
 	
     $progressActivity = "Reading items in folder $($SourceMailbox):$(GetFolderPath($SourceFolderObject))"
-    LogVerbose "[MoveItems]Building list of items to $($action.ToLower())"
+    LogVerbose "Building list of items to $($action.ToLower())"
     Write-Progress -Activity $progressActivity -Status "0 items read (out of $($SourceFolderObject.TotalCount))" -PercentComplete -1
 
     $itemSearchFilter = $null
@@ -1684,13 +1727,13 @@ Function MoveItems()
 
     if ($searchFilters.Count -gt 0)
     {
-        LogVerbose "[MoveItems]Search filters applied: $($searchFilters.Count)"
+        LogVerbose "Search filters applied: $($searchFilters.Count)"
         $itemSearchFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::And, $searchFilters)
     }
     elseif ($SearchFilter)
     {
         $itemSearchFilter = $SearchFilter
-        LogVerbose "[MoveItems]Search query being applied: $itemSearchFilter"
+        LogVerbose "Search query being applied: $itemSearchFilter"
     }
 
 	while ($MoreItems)
@@ -1708,6 +1751,7 @@ Function MoveItems()
         try
         {
             ApplyEWSOauthCredentials
+            SetClientRequestId $script:sourceService
             if ($itemSearchFilter)
             {
                 # We have a search filter, so need to apply this
@@ -1729,7 +1773,7 @@ Function MoveItems()
             }
             else
             {
-                Log "[MoveItems]Error when querying items: $($Error[0])" Red
+                Log "Error when querying items: $($Error[0])" Red
                 $MoreItems = $false
             }
         }
@@ -1747,7 +1791,7 @@ Function MoveItems()
                     {
                         if ($item.ItemClass -like $includedMessageClass)
                         {
-                            LogVerbose "[MoveItems]Included message class $($item.ItemClass)"
+                            LogVerbose "Included message class $($item.ItemClass)"
                             $skip = $false
                             break
                         }
@@ -1762,7 +1806,7 @@ Function MoveItems()
                         {
                             if ($item.ItemClass -like $excludedMessageClass)
                             {
-                                LogVerbose "[MoveItems]Skipping item with message class $($item.ItemClass)"
+                                LogVerbose "Skipping item with message class $($item.ItemClass)"
                                 $skip = $True
                                 break
                             }
@@ -1777,7 +1821,7 @@ Function MoveItems()
 		    $MoreItems = $FindResults.MoreAvailable
             if ($MoreItems)
             {
-                LogVerbose "[MoveItems]$($itemsToMove.Count) items read so far (out of $($SourceFolderObject.TotalCount))"
+                LogVerbose "$($itemsToMove.Count) items read so far (out of $($SourceFolderObject.TotalCount))"
             }
 		    $Offset += $PageSize
         }
@@ -1798,7 +1842,7 @@ Function MoveItems()
 
         # Add a check for the number of items left in the folder (we expect it to be zero)
         $SourceFolderObject = ThrottledFolderBind $SourceFolderObject.Id $null $script:sourceService
-        Log "[MoveItems]$($SourceMailbox):$(GetFolderPath($SourceFolderObject)) processed, now contains $($SourceFolderObject.TotalCount) items(s)" White
+        Log "$($SourceMailbox):$(GetFolderPath($SourceFolderObject)) processed, now contains $($SourceFolderObject.TotalCount) items(s)" White
     }
     else
     {
@@ -1810,7 +1854,7 @@ Function MoveItems()
 	{
 		if ($SourceFolderObject.ChildFolderCount -gt 0)
 		{
-            LogVerbose "[MoveItems]Processing subfolders of $($SourceMailbox):$(GetFolderPath($SourceFolderObject))"
+            LogVerbose "Processing subfolders of $($SourceMailbox):$(GetFolderPath($SourceFolderObject))"
 			$FolderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(1000)
             $FolderView.PropertySet = $script:requiredFolderProperties
 			$SourceFindFolderResults = $SourceFolderObject.FindFolders($FolderView)
@@ -1835,13 +1879,14 @@ Function MoveItems()
                             $attempts = 0
                             while ($FindFolderResults -eq $null -and $attempts -lt 3)
                             {
+                                SetClientRequestId $script:targetService
 	                            $FindFolderResults = $TargetFolderObject.FindFolders($Filter, $FolderView)
                                 $attempts++
                                 if ($FindFolderResults -eq $null)
                                 {
                                     if (!Throttled)
                                     {
-                                        $attempts = 10   
+                                        $attempts = 10
                                     }
 
                                 }
@@ -1858,13 +1903,13 @@ Function MoveItems()
                             }
                             else
                             {
-                                Log "[MoveItems]FAILED TO LOCATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)" Red
+                                Log "FAILED TO LOCATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)" Red
                                 $TargetSubFolderObject = $null
                             }
                         }
                         elseif ($FindFolderResults.TotalCount -eq 0)
 				        {
-                            LogVerbose "[MoveItems]Creating target folder $($SourceSubFolderObject.DisplayName)"
+                            LogVerbose "Creating target folder $($SourceSubFolderObject.DisplayName)"
                             if ( $SourceSubFolderObject.FolderClass -eq "IPF.Task" )
                             {
                                 # Task folders need to be created as a TasksFolder, otherwise the EWS API returns an error (even though the folder creation succeeds)
@@ -1878,18 +1923,34 @@ Function MoveItems()
 					        $TargetSubFolderObject.DisplayName = $SourceSubFolderObject.DisplayName
                             try
                             {
+                                SetClientRequestId $script:targetService
 					            $TargetSubFolderObject.Save($TargetFolderObject.Id)
                             }
-                            catch {}
-                            if ( $(ErrorReported "MoveItems") )
+                            catch
                             {
-                                Log "[MoveItems]FAILED TO CREATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)"
-                                $TargetSubFolderObject = $null
+                                if (Throttled)
+                                {
+                                    try
+                                    {
+                                        SetClientRequestId $script:targetService
+					                    $TargetSubFolderObject.Save($TargetFolderObject.Id)
+                                    }
+                                    catch
+                                    {
+                                        Log "FAILED TO CREATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)"
+                                        $TargetSubFolderObject = $null
+                                    }
+                                }
+                                else
+                                {
+                                    Log "FAILED TO CREATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)"
+                                    $TargetSubFolderObject = $null
+                                }
                             }
 				        }
 				        else
 				        {
-                            LogVerbose "[MoveItems]Target folder already exists"
+                            LogVerbose "Target folder already exists"
 					        $TargetSubFolderObject = $FindFolderResults.Folders[0]
 				        }
                         if ($TargetSubFolderObject -ne $null)
@@ -1900,25 +1961,27 @@ Function MoveItems()
                 }
                 else
                 {
-                    LogVerbose "[MoveItems]Folder $(GetFolderPath($SourceSubFolderObject)) on excluded list"
+                    LogVerbose "Folder $(GetFolderPath($SourceSubFolderObject)) on excluded list"
                 }
 			}
 		}
         else
         {
-            LogVerbose "[MoveItems]No subfolders found: $($SourceMailbox):$(GetFolderPath($SourceFolderObject))"
+            LogVerbose "No subfolders found: $($SourceMailbox):$(GetFolderPath($SourceFolderObject))"
         }
 	}
 
     # If delete parameter is set, check if the source folder is now empty (and if so, delete it)
     if ($Delete)
     {
+        SetClientRequestId $script:sourceService
 	    $SourceFolderObject.Load()
 	    if (($SourceFolderObject.TotalCount -eq 0) -And ($SourceFolderObject.ChildFolderCount -eq 0))
 	    {
 		    # Folder is empty, so can be safely deleted
 		    try
 		    {
+                SetClientRequestId $script:sourceService
 			    $SourceFolderObject.Delete([Microsoft.Exchange.Webservices.Data.DeleteMode]::SoftDelete)
 			    Log "$($SourceFolderObject.DisplayName) successfully deleted" Green
 		    }
@@ -1947,11 +2010,11 @@ Function GetFolder()
 	
     if ( $RootFolder -eq $null )
     {
-        LogVerbose "[GetFolder]GetFolder called with null root folder"
+        LogVerbose "Root folder not initialised"
         return $null
     }
 
-    LogVerbose "[GetFolder]Locating folder: $FolderPath"
+    LogVerbose "Locating folder: $FolderPath"
     if ($FolderPath.ToLower().StartsWith("wellknownfoldername"))
     {
         # Well known folder, so bind to it directly
@@ -1960,13 +2023,13 @@ Function GetFolder()
         {
             $wkf = $wkf.Substring( 0, $wkf.IndexOf("\") )
         }
-        LogVerbose "[GetFolder]Attempting to bind to well known folder: $wkf"
+        LogVerbose "Attempting to bind to well known folder: $wkf"
         $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::$wkf, $Mailbox )
         $RootFolder = ThrottledFolderBind $folderId $null $RootFolder.Service
         if ($RootFolder -ne $null)
         {
             $FolderPath = $FolderPath.Substring(20+$wkf.Length)
-            LogVerbose "[GetFolder]Remainder of path to match: $FolderPath"
+            LogVerbose "Remainder of path to match: $FolderPath"
         }
     }
 
@@ -2009,7 +2072,7 @@ Function GetFolder()
 				{
 					# We have more than one folder returned... We shouldn't ever get this, as it means we have duplicate folders
 					$Folder = $null
-					Log "[GetFolder]Duplicate folders ($($PathElements[$i])) found in path $FolderPath" Red
+					Log "Duplicate folders ($($PathElements[$i])) found in path $FolderPath" Red
 					break
 				}
                 elseif ( $FolderResults.TotalCount -eq 0 )
@@ -2022,13 +2085,13 @@ Function GetFolder()
                         try
                         {
 					        $subfolder.Save($Folder.Id)
-                            LogVerbose "[GetFolder]Created folder $($PathElements[$i])"
+                            LogVerbose "Created folder $($PathElements[$i])"
                         }
                         catch
                         {
 					        # Failed to create the subfolder
 					        $Folder = $null
-					        Log "[GetFolder]Failed to create folder $($PathElements[$i]) in path $FolderPath" Red
+					        Log "Failed to create folder $($PathElements[$i]) in path $FolderPath" Red
 					        break
                         }
                         $Folder = $subfolder
@@ -2037,7 +2100,7 @@ Function GetFolder()
                     {
 					    # Folder doesn't exist
 					    $Folder = $null
-					    Log "[GetFolder]Folder $($PathElements[$i]) doesn't exist in path $FolderPath" Red
+					    Log "Folder $($PathElements[$i]) doesn't exist in path $FolderPath" Red
 					    break
                     }
                 }
@@ -2124,7 +2187,8 @@ function ConvertId($entryId)
     $ewsId = $Null
     try
     {
-        $ewsId = $script:service.ConvertId($id, [Microsoft.Exchange.WebServices.Data.IdFormat]::EwsId)
+        SetClientRequestId $script:sourceService
+        $ewsId = $script:sourceService.ConvertId($id, [Microsoft.Exchange.WebServices.Data.IdFormat]::EwsId)
     }
     catch {}
     LogVerbose "EWS Id: $($ewsId.UniqueId)"
