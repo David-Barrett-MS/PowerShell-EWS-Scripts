@@ -79,6 +79,10 @@ param (
 
 
 #>** EWS/OAUTH FUNCTIONS START **#
+
+# These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
+# EWS/OAuth library version: 1.0.1
+
 function LoadLibraries()
 {
     param (
@@ -99,6 +103,7 @@ function LoadLibraries()
         {
             if ($dll -eq $null)
             {
+                Log "$dllName not found in current directory - searching Program Files folders" Yellow
 	            $dll = Get-ChildItem -Recurse "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
 	            if (!$dll)
 	            {
@@ -157,10 +162,28 @@ function GetTokenWithCertificate
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
     LogVerbose "Requesting token using certificate auth"
-    $script:oauthToken = $acquire.ExecuteAsync().Result
+    
+    try
+    {
+        $script:oauthToken = $acquire.ExecuteAsync().Result
+    }
+    catch
+    {
+        Log "Failed to obtain OAuth token: $Error" Red
+        exit # Failed to obtain a token
+    }
+
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    $script:oauthTokenAcquireTime = [DateTime]::UtcNow
-    $script:Impersonate = $true
+    if ($script:oAuthAccessToken -ne $null)
+    {
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        $script:Impersonate = $true
+        return
+    }
+
+    # If we get here, we don't have a token so can't continue
+    Log "Failed to obtain OAuth token (no error thrown)" Red
+    exit
 }
 
 function GetTokenViaCode
@@ -452,7 +475,7 @@ function ApplyEWSOAuthCredentials
     elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
-    LogVerbose("[ApplyEWSOAuthCredentials] OAuth access token invalid, attempting to renew")
+    LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($exchangeCredentials -eq $null) { return }
 
@@ -461,7 +484,7 @@ function ApplyEWSOAuthCredentials
         $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
         if ( [DateTime]::UtcNow -ge $tokenExpire)
         {
-            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed (certificate auth)"
+            Log "OAuth Token renewal failed (certificate auth)"
             exit # We no longer have access to the mailbox, so we stop here
         }
     }
@@ -469,20 +492,20 @@ function ApplyEWSOAuthCredentials
     {
         if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
         { 
-            Log "[ApplyEWSOAuthCredentials] OAuth Token renewal failed"
+            Log "OAuth Token renewal failed"
             exit # We no longer have access to the mailbox, so we stop here
         }
         $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
     }
 
-    Log "[ApplyEWSOAuthCredentials] OAuth token successfully renewed; new expiry: $tokenExpire"
+    Log "OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
             $service.Credentials = $exchangeCredentials
         }
-        LogVerbose "[ApplyEWSOAuthCredentials] Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
+        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
 }
 
@@ -570,7 +593,14 @@ Function TrustAllCerts()
     [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
 }
 
-Function CreateTraceListener($service)
+Function SetClientRequestId($exchangeService)
+{
+    # Apply unique client-request-id to the EWS service object
+
+    $exchangeService.ClientRequestId = (New-Guid).ToString()
+}
+
+Function CreateTraceListener($exchangeService)
 {
     # Create trace listener to capture EWS conversation (useful for debugging)
 
@@ -664,11 +694,13 @@ $TraceListenerClass			        }
 		    }
 "@
 
-        Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        if ("EWSTracer" -as [type]) {} else {
+            Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        }
         $script:Tracer=[EWSTracer]::new()
 
         # Attach the trace listener to the Exchange service
-        $service.TraceListener = $script:Tracer
+        $exchangeService.TraceListener = $script:Tracer
     }
 }
 
@@ -687,7 +719,8 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     }
 
     # Create new service
-    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2016)
+    $exchangeService.UserAgent = "https://github.com/David-Barrett-MS/PowerShell-EWS-Scripts"
 
     # Do we need to use OAuth?
     if ($Office365) { $OAuth = $true }
@@ -773,6 +806,9 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
             Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
         }
     }
+
+    SetClientRequestId $exchangeService
+    $exchangeService.ReturnClientRequestId = $true
 
     $script:services.Add($smtpAddress, $exchangeService)
     LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true

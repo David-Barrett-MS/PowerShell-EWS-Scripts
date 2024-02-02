@@ -36,6 +36,8 @@ param (
 
 
 #>** LOGGING FUNCTIONS START **#
+$scriptStartTime = [DateTime]::Now
+
 Function LogToFile([string]$Details)
 {
 	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
@@ -111,6 +113,7 @@ Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" 
 
 Function LogVerbose([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
     if ( !$VerboseLogFile -and !$DebugLogFile -and ($VerbosePreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
@@ -118,6 +121,7 @@ Function LogVerbose([string]$Details)
 
 Function LogDebug([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
     if (!$DebugLogFile -and ($DebugPreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details

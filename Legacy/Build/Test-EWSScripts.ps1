@@ -30,7 +30,8 @@ param (
 $TestRecoverDeletedItems = $false
 $TestUpdateFolderItems = $false
 $TestSearchMailboxItems = $false
-$TestMergeMailboxFolders = $true
+$TestMergeMailboxFolders = $false
+$TestRemoveDuplicateItems = $true
 
 # Tenant
 $tenantId = "fc69f6a8-90cd-4047-977d-0c768925b8ec"
@@ -328,8 +329,69 @@ function TestMergeMailboxFolder3()
     return "Check mailbox contents - no error reported, but no items found to copy (is Inbox empty?)"
 }
 
+# Test RemoveDuplicateItems with application permissions to primary mailbox
+function TestRemoveDuplicateItems1()
+{
+    $global:testDescriptions.Add("TestRemoveDuplicateItems1", "Remove-DuplicateItems.ps1: access primary mailbox using application permissions and list all duplicate items within entire mailbox.")
+    if (!$runAppPermissionTests) { return "Skipped as app configuration incomplete" }
 
+    $Error.Clear()
+    trap {}
+    if (![String]::IsNullOrEmpty(($secretKey)))
+    {
+        $duplicateItems = .\Remove-DuplicateItems.ps1 -Mailbox $Mailbox -RecurseFolders -MatchEntireMailbox -ReturnDuplicateCount -WhatIf -Office365 -OAuth -OAuthTenantId $tenantId -OAuthClientId $clientIdAppPermissions -OAuthSecretKey $secretKey
+    }
+    elseif ($certificate -ne $null)
+    {
+        $duplicateItems = .\Remove-DuplicateItems.ps1 -Mailbox $Mailbox -RecurseFolders -MatchEntireMailbox -ReturnDuplicateCount -WhatIf -Office365 -OAuth -OAuthTenantId $tenantId -OAuthClientId $clientIdAppPermissions -OAuthCertificate $certificate 
+    }
+    else
+    {
+        return "No valid app auth information provided (need secret key or certificate)"
+    }
 
+    if ($Error.Count -gt 0)
+    {
+        return "Failed, error while processing $Mailbox"
+    }
+    if ($duplicateItems -gt 0)
+    {
+        return "Succeeded, $Mailbox accessible and $duplicateItems duplicates found"
+    }
+    return "Check mailbox contents - no error reported, but no duplicates found"
+}
+
+# Test RemoveDuplicateItems with application permissions to primary mailbox
+function TestRemoveDuplicateItems2()
+{
+    $global:testDescriptions.Add("TestRemoveDuplicateItems2", "Remove-DuplicateItems.ps1: access primary mailbox using application permissions and list all duplicate items within entire mailbox, only matching duplicate items with a creation date of today")
+    if (!$runAppPermissionTests) { return "Skipped as app configuration incomplete" }
+
+    $Error.Clear()
+    trap {}
+    if (![String]::IsNullOrEmpty(($secretKey)))
+    {
+        $duplicateItems = .\Remove-DuplicateItems.ps1 -Mailbox $Mailbox -RecurseFolders -MatchEntireMailbox -ReturnDuplicateCount -WhatIf -Office365 -OAuth -OAuthTenantId $tenantId -OAuthClientId $clientIdAppPermissions -OAuthSecretKey $secretKey
+    }
+    elseif ($certificate -ne $null)
+    {
+        $duplicateItems = .\Remove-DuplicateItems.ps1 -Mailbox $Mailbox -RecurseFolders -MatchEntireMailbox -ReturnDuplicateCount -WhatIf -Office365 -OAuth -OAuthTenantId $tenantId -OAuthClientId $clientIdAppPermissions -OAuthCertificate $certificate 
+    }
+    else
+    {
+        return "No valid app auth information provided (need secret key or certificate)"
+    }
+
+    if ($Error.Count -gt 0)
+    {
+        return "Failed, error while processing $Mailbox"
+    }
+    if ($duplicateItems -gt 0)
+    {
+        return "Succeeded, $Mailbox accessible and $duplicateItems duplicates found"
+    }
+    return "Check mailbox contents - no error reported, but no duplicates found"
+}
 
 # Run tests and collate results
 AppPermissionsCheck
@@ -358,6 +420,10 @@ if ($TestMergeMailboxFolders)
 {
     #$results.Add("TestMergeMailboxFolder1", "$(TestMergeMailboxFolder1)")
     $results.Add("TestMergeMailboxFolder3", "$(TestMergeMailboxFolder3)")
+}
+if ($TestRemoveDuplicateItems)
+{
+    $results.Add("TestRemoveDuplicateItems1", "$(TestRemoveDuplicateItems1)")
 }
 $global:testResults = $results
 
