@@ -186,7 +186,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.3.6"
+$script:ScriptVersion = "1.3.7"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -319,7 +319,7 @@ Function ReportError($Context)
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.1
+# EWS/OAuth library version: 1.0.2
 
 function LoadLibraries()
 {
@@ -870,25 +870,15 @@ Function CreateTraceListener($exchangeService)
 			    private StreamWriter _traceStream = null;
                 private string _lastResponse = String.Empty;
 
-			    public EWSTracer()
+			    public EWSTracer(string traceFileName = "$traceFileForCode" )
 			    {
-"@
-    if (![String]::IsNullOrEmpty(($traceFileForCode)))
-    {
-        $TraceListenerClass = 
-@"
-$TraceListenerClass
 				    try
 				    {
-					    _traceStream = File.AppendText("$traceFileForCode");
+                        if (!String.IsNullOrEmpty(traceFileName))
+					        _traceStream = File.AppendText(traceFileName);
 				    }
 				    catch { }
-"@
-    }
-
-        $TraceListenerClass = 
-@"
-$TraceListenerClass			        }
+                }
 
 			    ~EWSTracer()
 			    {
@@ -935,7 +925,7 @@ $TraceListenerClass			        }
         if ("EWSTracer" -as [type]) {} else {
             Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
         }
-        $script:Tracer=[EWSTracer]::new()
+        $script:Tracer=[EWSTracer]::new($traceFileForCode)
 
         # Attach the trace listener to the Exchange service
         $exchangeService.TraceListener = $script:Tracer
@@ -1053,30 +1043,6 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     return $exchangeService
 }
 
-#>** EWS/OAUTH FUNCTIONS END **#
-
-
-Function DecreaseBatchSize()
-{
-    param (
-        $DecreaseMultiplier = 0.8
-    )
-
-    if ($script:currentBatchSize -le 10) { return }
-
-    if ($script:currentBatchSize -gt 50)
-    {
-        $script:currentBatchSize = [int]($script:currentBatchSize * $DecreaseMultiplier)
-    }
-    else
-    {
-        $script:currentBatchSize = [int]($script:currentBatchSize - 10)
-    }
-
-    if ($script:currentBatchSize -lt 10) { $script:currentBatchSize = 10 }
-    LogVerbose "Retrying with smaller batch size of $($script:currentBatchSize)"
-}
-
 Function Throttled()
 {
     # Checks if we've been throttled.  If we have, we wait for the specified number of BackOffMilliSeconds before returning
@@ -1092,9 +1058,11 @@ Function Throttled()
     if ($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value.Name -eq "BackOffMilliseconds")
     {
         # We are throttled, and the server has told us how long to back off for
-        Log "Throttling detected, server requested back off for $($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text") milliseconds" Yellow
-        Start-Sleep -Milliseconds $responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text"
-        Log "Throttling budget should now be reset, resuming operations" Gray
+        $backOffMilliseconds = [int]::Parse($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text")
+        $resumeTime = [DateTime]::Now.AddMilliseconds($backOffMilliseconds)
+        Log "Back off for $backOffMilliseconds milliseconds (will resume at $($resumeTime.ToLongTimeString()))" Yellow
+        Start-Sleep -Milliseconds $backOffMilliseconds
+        Log "Resuming operations" Gray
         return $true
     }
     return $false
@@ -1109,7 +1077,7 @@ function ThrottledFolderBind()
 
     if ($folderId -eq $null)
     {
-        Log "Empty folder Id passed to ThrottledFolderBind" Red
+        Log "FolderId missing" Red
         return $null
     }
 
@@ -1117,8 +1085,12 @@ function ThrottledFolderBind()
     $folder = $null
     if ($exchangeService -eq $null)
     {
-        Log "No ExchangeService object set" Red
-        return $null
+        $exchangeService = $script:service
+        if ($exchangeService -eq $null)
+        {
+            Log "No ExchangeService object set" Red
+            return $null
+        }
     }
     if ($propset -eq $null)
     {
@@ -1159,6 +1131,34 @@ function ThrottledFolderBind()
     LogVerbose "FAILED to bind to folder $folderId"
     return $null
 }
+
+#>** EWS/OAUTH FUNCTIONS END **#
+
+
+Function DecreaseBatchSize()
+{
+    param (
+        $DecreaseMultiplier = 0.8
+    )
+
+    if ($script:currentBatchSize -lt 1)
+    {
+        $script:currentBatchSize = 1
+    }
+    if ($script:currentBatchSize -eq 1)
+        { return }
+
+    if ($script:currentBatchSize -lt 6) { $script:currentBatchSize = 1 }
+    elseif ($script:currentBatchSize -lt 11) { $script:currentBatchSize = 5 }
+    elseif ($script:currentBatchSize -lt 21) { $script:currentBatchSize = 10 }
+    elseif ($script:currentBatchSize -gt 50) { $script:currentBatchSize = [int]($script:currentBatchSize * $DecreaseMultiplier) }
+    else { $script:currentBatchSize = [int]($script:currentBatchSize - 10) }
+
+    if ($script:currentBatchSize -lt 1) { $script:currentBatchSize = 1 }
+    LogVerbose "Reducing batch size to $($script:currentBatchSize)"
+}
+
+
 
 $script:itemRetryCount = @{}
 Function RemoveProcessedItemsFromList()
@@ -1241,11 +1241,11 @@ Function RemoveProcessedItemsFromList()
     {
         if ($keepItemsIfNoResults)
         {
-            Log "No results returned, whole batch will be retried" Yellow
+            LogVerbose "No results returned, whole batch will be retried"
         }
         else
         {
-            Log "No results returned - assuming all items processed" White
+            Log "No results returned - assuming all items processed" Yellow
             for ($i = 0; $i -lt $requestedItems.Count; $i++)
             {
                 [void]$Items.Remove($requestedItems[$i])
@@ -1255,7 +1255,7 @@ Function RemoveProcessedItemsFromList()
     }
     if ( ($failed -gt 0) -and !$suppressErrors )
     {
-        Log "$failed items reported error during batch request ($permanentFailures not retriable)" Yellow
+        Log "$failed item(s) reported error during batch request ($permanentFailures not retriable)" Yellow
     }
     else
     {
@@ -1290,6 +1290,7 @@ Function ThrottledBatchMove()
     }
     $totalItems = $ItemsToMove.Count
     Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
+    $timeoutErrorCount = 0
 
     while ( !$finished )
     {
@@ -1384,15 +1385,21 @@ Function ThrottledBatchMove()
                     elseif ($Error[0].Exception.InnerException -and $Error[0].Exception.InnerException.ToString().Contains("The operation has timed out"))
                     {
                         # We've probably been throttled, so we'll reduce the batch size and try again
-                        if ($script:currentBatchSize -gt 10)
+                        if ($script:currentBatchSize -gt 1)
                         {
                             LogVerbose "Timeout error received"
                             DecreaseBatchSize
                         }
                         else
                         {
-                            Log "Timeout error received and batch size at minimum, so halting processing" Red
-                            $finished = $true
+                            # We are at minimum batch size (1) and still timing out.  If we get too many of these, we'll stop processing as it implies an issue that needs investigating.
+                            # With a batch size of 1, we'd expect a throttling response rather than a timeout
+                            $timeoutErrorCount++
+                            if ($timeoutErrorCount -gt 3)
+                            {
+                                Log "Too many timeout errors received, halting processing" Red
+                                $finished = $true
+                            }
                         }
                     }
                     else
@@ -2484,6 +2491,12 @@ $script:requiredFolderProperties = New-Object Microsoft.Exchange.WebServices.Dat
     [Microsoft.Exchange.WebServices.Data.FolderSchema]::FolderClass, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ParentFolderId, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ChildFolderCount,
     [Microsoft.Exchange.WebServices.Data.FolderSchema]::TotalCount, $script:PR_FOLDER_TYPE)
 $script:requiredItemProperties = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.FolderSchema]::Subject)
+
+if ($BatchSize -gt 10 -and ($SourcePublicFolders -or $TargetPublicFolders) )
+{
+    $BatchSize = 10
+    Log "Batch size adjusted to 10 as public folders are being accessed"
+}
 
 Write-Host ""
 

@@ -81,7 +81,7 @@ param (
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.1
+# EWS/OAuth library version: 1.0.2
 
 function LoadLibraries()
 {
@@ -632,25 +632,15 @@ Function CreateTraceListener($exchangeService)
 			    private StreamWriter _traceStream = null;
                 private string _lastResponse = String.Empty;
 
-			    public EWSTracer()
+			    public EWSTracer(string traceFileName = "$traceFileForCode" )
 			    {
-"@
-    if (![String]::IsNullOrEmpty(($traceFileForCode)))
-    {
-        $TraceListenerClass = 
-@"
-$TraceListenerClass
 				    try
 				    {
-					    _traceStream = File.AppendText("$traceFileForCode");
+                        if (!String.IsNullOrEmpty(traceFileName))
+					        _traceStream = File.AppendText(traceFileName);
 				    }
 				    catch { }
-"@
-    }
-
-        $TraceListenerClass = 
-@"
-$TraceListenerClass			        }
+                }
 
 			    ~EWSTracer()
 			    {
@@ -697,7 +687,7 @@ $TraceListenerClass			        }
         if ("EWSTracer" -as [type]) {} else {
             Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
         }
-        $script:Tracer=[EWSTracer]::new()
+        $script:Tracer=[EWSTracer]::new($traceFileForCode)
 
         # Attach the trace listener to the Exchange service
         $exchangeService.TraceListener = $script:Tracer
@@ -813,6 +803,95 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     $script:services.Add($smtpAddress, $exchangeService)
     LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
     return $exchangeService
+}
+
+Function Throttled()
+{
+    # Checks if we've been throttled.  If we have, we wait for the specified number of BackOffMilliSeconds before returning
+    if ( $script:Tracer -eq $null -or [String]::IsNullOrEmpty($script:Tracer.LastResponse))
+    {
+        return $false # Throttling does return a response, if we don't have one, then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
+    }
+
+    $lastResponse = $script:Tracer.LastResponse.Replace("<?xml version=`"1.0`" encoding=`"utf-8`"?>", "")
+    $lastResponse = "<?xml version=`"1.0`" encoding=`"utf-8`"?>$lastResponse"
+    $responseXml = [xml]$lastResponse
+
+    if ($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value.Name -eq "BackOffMilliseconds")
+    {
+        # We are throttled, and the server has told us how long to back off for
+        $backOffMilliseconds = [int]::Parse($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text")
+        $resumeTime = [DateTime]::Now.AddMilliseconds($backOffMilliseconds)
+        Log "Back off for $backOffMilliseconds milliseconds (will resume at $($resumeTime.ToLongTimeString()))" Yellow
+        Start-Sleep -Milliseconds $backOffMilliseconds
+        Log "Resuming operations" Gray
+        return $true
+    }
+    return $false
+}
+
+function ThrottledFolderBind()
+{
+    param (
+        [Microsoft.Exchange.WebServices.Data.FolderId]$folderId,
+        $propset = $null,
+        $exchangeService = $null)
+
+    if ($folderId -eq $null)
+    {
+        Log "FolderId missing" Red
+        return $null
+    }
+
+    LogVerbose "Attempting to bind to folder $folderId"
+    $folder = $null
+    if ($exchangeService -eq $null)
+    {
+        $exchangeService = $script:service
+        if ($exchangeService -eq $null)
+        {
+            Log "No ExchangeService object set" Red
+            return $null
+        }
+    }
+    if ($propset -eq $null)
+    {
+        $propset = $script:requiredFolderProperties
+    }
+
+    try
+    {
+        ApplyEWSOauthCredentials
+        SetClientRequestId $exchangeService
+        $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
+        if (!($folder -eq $null))
+        {
+            LogVerbose "Successfully bound to folder $folderId"
+        }
+        return $folder
+    }
+    catch {}
+
+    if (Throttled)
+    {
+        try
+        {
+            ApplyEWSOauthCredentials
+            SetClientRequestId $exchangeService
+            $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
+            if (!($folder -eq $null))
+            {
+                LogVerbose "Successfully bound to folder $folderId"
+            }
+            return $folder
+        }
+        catch {}
+    }
+
+    # If we get to this point, we have been unable to bind to the folder
+    ReportError "ThrottledFolderBind"
+    LogVerbose "FAILED to bind to folder $folderId"
+    return $null
 }
 
 #>** EWS/OAUTH FUNCTIONS END **#
