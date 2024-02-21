@@ -67,6 +67,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing AutoDiscover.")]	
     [switch]$AllowInsecureRedirection,
 
+    [Parameter(Mandatory=$False,HelpMessage="User-Agent header that will be set on ExchangeService and AutodiscoverService objects.")]	
+    [string]$UserAgent = "https://github.com/David-Barrett-MS/PowerShell-EWS-Scripts",
+
     [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file.")]	
     [string]$TraceFile,
 #>** EWS/OAUTH PARAMETERS END **#
@@ -81,7 +84,7 @@ param (
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.2
+# EWS/OAuth library version: 1.0.3
 
 function LoadLibraries()
 {
@@ -101,7 +104,7 @@ function LoadLibraries()
 
         if ($searchProgramFiles)
         {
-            if ($dll -eq $null)
+            if ($null -eq $dll)
             {
                 Log "$dllName not found in current directory - searching Program Files folders" Yellow
 	            $dll = Get-ChildItem -Recurse "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
@@ -112,7 +115,7 @@ function LoadLibraries()
             }
         }
 
-        if ($dll -eq $null)
+        if ($null -eq $dll)
         {
             Log "Unable to load locate $dll" Red
             return $false
@@ -174,7 +177,7 @@ function GetTokenWithCertificate
     }
 
     $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    if ($script:oAuthAccessToken -ne $null)
+    if ($null -ne $script:oAuthAccessToken)
     {
         $script:oauthTokenAcquireTime = [DateTime]::UtcNow
         $script:Impersonate = $true
@@ -189,7 +192,7 @@ function GetTokenWithCertificate
 function GetTokenViaCode
 {
     # Acquire auth code (needed to request token)
-    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&prompt=select_account&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
     Write-Host "Please complete log-in via the web browser, and then copy the redirect URL (including auth code) to the clipboard to continue" -ForegroundColor Green
     Set-Clipboard -Value "Waiting for auth code"
     Start-Process $authUrl
@@ -209,7 +212,8 @@ function GetTokenViaCode
         {
             $authcode = $authcode.Substring(0, $codeEnd)
         }
-        Write-Verbose "Using auth code: $authcode"
+        LogVerbose "Using auth code: $authcode"
+        Write-Host "Auth code acquired, attempting to obtain access token" -ForegroundColor Green
     }
     else
     {
@@ -262,7 +266,7 @@ function GetTokenWithKey
       "scope"         = "https://outlook.office365.com/.default"
     }
 
-    if ($script:oAuthToken -ne $null)
+    if ($null -ne $script:oAuthToken)
     {
         # If we have a refresh token, add that to our request body and change grant type
         if (![String]::IsNullOrEmpty($script:oAuthToken.refresh_token))
@@ -297,7 +301,7 @@ function JWTToPSObject
 
     $tokenheader = $token.Split(".")[0].Replace('-', '+').Replace('_', '/')
     while ($tokenheader.Length % 4) { $tokenheader = "$tokenheader=" }    
-    $tokenHeaderObject = [System.Text.Encoding]::UTF8.GetString([system.convert]::FromBase64String($tokenheader)) | ConvertFrom-Json
+    #$tokenHeaderObject = [System.Text.Encoding]::UTF8.GetString([system.convert]::FromBase64String($tokenheader)) | ConvertFrom-Json
 
     $tokenPayload = $token.Split(".")[1].Replace('-', '+').Replace('_', '/')
     while ($tokenPayload.Length % 4) { $tokenPayload = "$tokenPayload=" }
@@ -309,7 +313,7 @@ function JWTToPSObject
 
 function LogOAuthTokenInfo
 {
-    if ($global:OAuthAccessToken -eq $null)
+    if ($null -eq $global:OAuthAccessToken)
     {
         Log "No OAuth token obtained." Red
         return
@@ -356,7 +360,7 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ($script:oauthToken -ne $null)
+    if ($null -ne $script:oauthToken)
     {
         # We already have a token
         if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
@@ -372,7 +376,7 @@ function GetOAuthCredentials
     {
         GetTokenWithKey
     }
-    elseif ($OAuthCertificate -ne $null)
+    elseif ($null -ne $OAuthCertificate)
     {
         GetTokenWithCertificate
     }
@@ -384,7 +388,7 @@ function GetOAuthCredentials
         }
         else
         {
-            if ($GlobalTokenStorage -and $script:oauthToken -eq $null)
+            if ($GlobalTokenStorage -and $null -eq $script:oauthToken)
             {
                 # Check if we have token variable set globally
                 if ($global:oAuthPersistAppId -eq $OAuthClientId)
@@ -431,7 +435,7 @@ function ApplyEWSOAuthCredentials
     # Apply EWS OAuth credentials to all our service objects
 
     if ( -not $OAuth ) { return }
-    if ( $script:services -eq $null ) { return }
+    if ( $null -eq $script:services ) { return }
 
     
     if ($DebugTokenRenewal -gt 0 -and $script:oauthToken)
@@ -441,7 +445,7 @@ function ApplyEWSOAuthCredentials
         {
             # Wait until token expires (we do this after every call when debugging OAuth)
             # Access tokens can't be revoked, but a policy can be assigned to reduce lifetime to 10 minutes: https://learn.microsoft.com/en-us/graph/api/resources/tokenlifetimepolicy?view=graph-rest-1.0
-            if ($OAuthCertificate -ne $null)
+            if ( $null -ne $OAuthCertificate)
             {
                 $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
             }
@@ -468,7 +472,7 @@ function ApplyEWSOAuthCredentials
         }
     }
     
-    if ($OAuthCertificate -ne $null)
+    if ($null -ne $OAuthCertificate)
     {
         if ( [DateTime]::UtcNow -lt $script:oauthToken.ExpiresOn.UtcDateTime) { return }
     }
@@ -477,9 +481,9 @@ function ApplyEWSOAuthCredentials
     # The token has expired and needs refreshing
     LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
-    if ($exchangeCredentials -eq $null) { return }
+    if ($null -eq $exchangeCredentials) { return }
 
-    if ($OAuthCertificate -ne $null)
+    if ($null -ne $OAuthCertificate)
     {
         $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
         if ( [DateTime]::UtcNow -ge $tokenExpire)
@@ -546,6 +550,10 @@ Function LoadEWSManagedAPI
             Write-Host "Failed to read EWS API location: $ewsApiLocation"
             Exit
         }
+        # We can only set any EWS properties once the API is loaded
+
+        $script:PR_REPLICA_LIST = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x6698, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary) # PR_REPLICA_LIST is required to perform AutoDiscover requests for public folders
+        $script:PR_FOLDER_TYPE = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3601, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Integer)
     }
 
     return $ewsApiLoaded
@@ -557,7 +565,7 @@ Function CurrentUserPrimarySmtpAddress()
     $searcher = [adsisearcher]"(samaccountname=$env:USERNAME)"
     $result = $searcher.FindOne()
 
-    if ($result -ne $null)
+    if ($null -ne $result)
     {
         $mail = $result.Properties["mail"]
         LogDebug "Current user's SMTP address is: $mail"
@@ -610,7 +618,7 @@ Function CreateTraceListener($exchangeService)
         Exit
     }
 
-    if ($script:Tracer -eq $null)
+    if ($null -eq $script:Tracer)
     {
         $traceFileForCode = ""
 
@@ -699,7 +707,7 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     # Creates and returns an ExchangeService object to be used to access mailboxes
 
     # First of all check to see if we have a service object for this mailbox already
-    if ($script:services -eq $null)
+    if ($null -eq $script:services)
     {
         $script:services = @{}
     }
@@ -710,14 +718,14 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
 
     # Create new service
     $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2016)
-    $exchangeService.UserAgent = "https://github.com/David-Barrett-MS/PowerShell-EWS-Scripts"
+    $exchangeService.UserAgent = $UserAgent
 
     # Do we need to use OAuth?
     if ($Office365) { $OAuth = $true }
     if ($OAuth)
     {
         $exchangeService.Credentials = GetOAuthCredentials
-        if ($exchangeService.Credentials -eq $null)
+        if ($null -eq $exchangeService.Credentials)
         {
             # OAuth failed
             return $null
@@ -726,7 +734,7 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     else
     {
         # Set credentials if specified, or use logged on user.
-        if ($Credentials -ne $Null)
+        if ($null -ne $Credentials)
         {
             LogVerbose "Applying given credentials: $($Credentials.UserName)"
             $exchangeService.Credentials = $Credentials.GetNetworkCredential()
@@ -805,10 +813,183 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     return $exchangeService
 }
 
+Function CreateAutoDiscoverService($exchangeService)
+{
+    $autodiscover = new-object Microsoft.Exchange.WebServices.Autodiscover.AutodiscoverService(new-object Uri("https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc"), ExchangeVersion.Exchange2016)
+    $autodiscover.Credentials = $exchangeService.Credentials
+    $autodiscover.TraceListener = $exchangeService.TraceListener
+    $autodiscover.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+    $autodiscover.TraceEnabled = $true
+    $autodiscover.UserAgent = $UserAgent
+    return $autodiscover;
+}
+
+function SetPublicFolderHeirarchyHeaders($ExchangeService, $AutodiscoverAddress)
+{
+    # Sets the X-PublicFolderMailbox and X-AnchorMailbox properties for a request to public folders
+
+    if (!$OAuth -and !$Office365)
+    {
+        LogDebug "Public folder headers not implemented for on-premises Exchange"
+        return $null        
+    }
+
+    if ($null -eq $script:publicFolderHeirarchyHeaders)
+    {
+        # We keep a cache of known folders to avoid unnecessary AutoDiscover
+        $script:publicFolderHeirarchyHeaders = New-Object 'System.Collections.Generic.Dictionary[String,String[]]'
+    }
+
+    $xAnchorMailbox = ""
+    $xPublicFolderMailbox = ""
+    if ($script:publicFolderHeirarchyHeaders.ContainsKey($AutodiscoverAddress))
+    {
+        $xAnchorMailbox = $script:publicFolderHeirarchyHeaders[$AutodiscoverAddress][0]
+        $xPublicFolderMailbox = $script:publicFolderHeirarchyHeaders[$AutodiscoverAddress][1]
+    }    
+    else {
+        $autoDiscoverService = CreateAutoDiscoverService $ExchangeService
+        [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName[]]$userSettingsRequired = @([Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::PublicFolderInformation, [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::InternalRpcClientServer)
+        $userSettings = $autoDiscoverService.GetUserSettings($AutodiscoverAddress, $userSettingsRequired)
+    
+        if ($null -eq $userSettings)
+        {
+            LogVerbose "Failed to obtain Autodiscover public folder settings"
+            return
+        }
+    
+        $xAnchorMailbox = $userSettings.Settings[[Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::PublicFolderInformation]
+        if ([String]::IsNullOrEmpty($xAnchorMailbox))
+        {
+            LogVerbose "PublicFolderInformation not present in Autodiscover response"
+            return
+        }
+        LogVerbose "Public folder heirarchy X-AnchorMailbox set to $xAnchorMailbox"
+    
+        # Now we need to retrieve the X-PublicFolderMailbox value
+        $userSettings = $autoDiscoverService.GetUserSettings($xAnchorMailbox, [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::InternalRpcClientServer)
+        $xPublicFolderMailbox = $userSettings.Settings[[Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::InternalRpcClientServer]
+        if ([String]::IsNullOrEmpty($xPublicFolderMailbox))
+        {
+            LogVerbose "PublicFolderInformation not present in Autodiscover response fpr $xAnchorMailbox"
+            return
+        }
+        LogVerbose "Public folder heirarchy X-PublicFolderMailbox set to $xPublicFolderMailbox"
+
+        $script:publicFolderHeirarchyHeaders.Add($AutodiscoverAddress, @($xAnchorMailbox, $xPublicFolderMailbox))
+    }
+
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-PublicFolderMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-PublicFolderMailbox") | out-null
+    }
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-AnchorMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-AnchorMailbox") | out-null
+    }
+    $ExchangeService.HttpHeaders.Add("X-PublicFolderMailbox", $xPublicFolderMailbox) | out-null
+    $ExchangeService.HttpHeaders.Add("X-AnchorMailbox", $xAnchorMailbox) | out-null
+}
+
+Function SetPublicFolderContentHeaders($ExchangeService, $PublicFolder)
+{
+    # Sets the X-PublicFolderMailbox and X-AnchorMailbox properties for a content request to public folders
+
+    if (!$OAuth -and !$Office365)
+    {
+        LogDebug "Public folder headers not implemented for on-premises Exchange"
+        return $null        
+    }
+
+    if ($null -eq $script:publicFolderContentHeaders)
+    {
+        # We keep a cache of known folders to avoid unnecessary AutoDiscover
+        $script:publicFolderContentHeaders = New-Object 'System.Collections.Generic.Dictionary[String,String]'
+    }
+
+    $xPublicFolderMailbox = ""
+    if ($script:publicFolderContentHeaders.ContainsKey($PublicFolder.FolderId.UniqueId))
+    {
+        $xPublicFolderMailbox = $script:publicFolderContentHeaders[$PublicFolder.FolderId.UniqueId]
+    }
+    else
+    {
+        # We need to perform an AutoDiscover request to obtain the correct header value        
+        $replicaGuid = ""
+        foreach ($extendedProperty in $PublicFolder.ExtendedProperties)
+        {
+            if ($extendedProperty.PropertyDefinition -eq $script:PR_REPLICA_LIST)
+            {
+                #[byte[]]$ByteArr = ([byte[]])$extendedProperty.Value;
+                $replicaGuid =[System.Text.Encoding]::ASCII.GetString($extendedProperty.Value, 0, 36)
+                break
+            }
+        }
+        if ([String]::IsNullOrEmpty($replicaGuid))
+        {
+            LogVerbose "Public folder PR_REPLICA_LIST not present"
+            return
+        }
+
+        # Work out the AutoDiscover address from the replica GUID and domain
+        if ($null -eq $Mailbox -and $null -ne $SourceMailbox)
+        {
+            $Mailbox = $SourceMailbox
+        }
+        $domainStart = $Mailbox.IndexOf("@")
+        if ($domainStart -lt 0)
+        {
+            Log "Invalid mailbox: $Mailbox" Red
+            return
+        }
+        $autoDiscoverAddress = "$replicaGuid$($Mailbox.Substring($domainStart))"
+        LogVerbose "AutoDiscover address for $autoDiscoverAddress to access public folder $($PublicFolder.DisplayName)"
+        
+        $autoDiscoverService = CreateAutoDiscoverService $ExchangeService
+        if ($null -eq $autoDiscoverService)
+        {
+            LogVerbose "Failed to create AutoDiscover service"
+            return
+        }
+
+        [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName[]]$userSettingsRequired = @([Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::PublicFolderInformation, [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::AutoDiscoverSMTPAddress)
+        $userSettings = $autoDiscoverService.GetUserSettings($autodiscoverAddress, $userSettingsRequired)
+
+        if ($null -eq $userSettings)
+        {
+            LogVerbose "Failed to obtain user settings for $autoDiscoverAddress"
+            return
+        }
+
+        $xPublicFolderMailbox = $userSettings.Settings[[Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::AutoDiscoverSMTPAddress]
+        if ([String]::IsNullOrEmpty($xPublicFolderMailbox))
+        {
+            LogVerbose "Failed to obtain AutoDiscoverSMTPAddress for $autoDiscoverAddress"
+            return
+        }
+
+        $script:publicFolderContentHeaders.Add($PublicFolder.FolderId.UniqueId, $xPublicFolderMailbox)
+        LogVerbose "Caching X-PublicFolderMailbox for folder $($PublicFolder.DisplayName): $xPublicFolderMailbox"
+    }
+
+    # Both X-PublicFolderMailbox and X-AnchorMailbox are required for public folder content requests, but they have the same value
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-PublicFolderMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-PublicFolderMailbox") | out-null
+    }
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-AnchorMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-AnchorMailbox") | out-null
+    }
+    $ExchangeService.HttpHeaders.Add("X-PublicFolderMailbox", $xPublicFolderMailbox) | out-null
+    $ExchangeService.HttpHeaders.Add("X-AnchorMailbox", $xPublicFolderMailbox) | out-null
+    LogVerbose "Set X-PublicFolderMailbox and X-AnchorMailbox to $xPublicFolderMailbox"
+}
+
 Function Throttled()
 {
     # Checks if we've been throttled.  If we have, we wait for the specified number of BackOffMilliSeconds before returning
-    if ( $script:Tracer -eq $null -or [String]::IsNullOrEmpty($script:Tracer.LastResponse))
+    if ( $null -eq $script:Tracer -or [String]::IsNullOrEmpty($script:Tracer.LastResponse))
     {
         return $false # Throttling does return a response, if we don't have one, then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
     }
@@ -837,7 +1018,7 @@ function ThrottledFolderBind()
         $propset = $null,
         $exchangeService = $null)
 
-    if ($folderId -eq $null)
+    if ($null -eq $folderId)
     {
         Log "FolderId missing" Red
         return $null
@@ -845,16 +1026,25 @@ function ThrottledFolderBind()
 
     LogVerbose "Attempting to bind to folder $folderId"
     $folder = $null
-    if ($exchangeService -eq $null)
+    if ($null -eq $exchangeService)
     {
         $exchangeService = $script:service
-        if ($exchangeService -eq $null)
+        if ($null -eq $exchangeService)
         {
             Log "No ExchangeService object set" Red
             return $null
         }
     }
-    if ($propset -eq $null)
+
+    if ($null -eq $script:requiredFolderProperties)
+    {
+        # If scripts require a custom property set, this variable should be set before calling this function.  If it's missing at this point, we just retrieve the most useful folder properties
+        $script:requiredFolderProperties = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName,
+            [Microsoft.Exchange.WebServices.Data.FolderSchema]::FolderClass, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ParentFolderId, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ChildFolderCount,
+            [Microsoft.Exchange.WebServices.Data.FolderSchema]::TotalCount, $script:PR_FOLDER_TYPE)
+        $script:requiredFolderProperties.Add($script:PR_REPLICA_LIST) # Required for public folder Autodiscover
+    }    
+    if ($null -eq $propset)
     {
         $propset = $script:requiredFolderProperties
     }
@@ -864,7 +1054,7 @@ function ThrottledFolderBind()
         ApplyEWSOauthCredentials
         SetClientRequestId $exchangeService
         $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
-        if (!($folder -eq $null))
+        if (!($null -eq $folder))
         {
             LogVerbose "Successfully bound to folder $folderId"
         }
@@ -879,7 +1069,7 @@ function ThrottledFolderBind()
             ApplyEWSOauthCredentials
             SetClientRequestId $exchangeService
             $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
-            if (!($folder -eq $null))
+            if (!($null -eq $folder))
             {
                 LogVerbose "Successfully bound to folder $folderId"
             }
