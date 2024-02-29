@@ -107,6 +107,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="When specified, the source folder will be deleted after the move (can't be used with -Copy).")]
     [switch]$Delete,
 
+    [Parameter(Mandatory=$False,HelpMessage="When specified, the source items.  Can only be used with -Copy, triggers effects a client-side move.")]
+    [switch]$DeleteItems,
+
     [Parameter(Mandatory=$False,HelpMessage="When specified, items are copied rather than moved (can't be used with -Delete).")]
     [switch]$Copy,
 
@@ -193,7 +196,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.3.8"
+$script:ScriptVersion = "1.3.9"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -326,7 +329,7 @@ Function ReportError($Context)
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.3
+# EWS/OAuth library version: 1.0.4
 
 function LoadLibraries()
 {
@@ -866,7 +869,6 @@ Function CreateTraceListener($exchangeService)
 
         if (![String]::IsNullOrEmpty($TraceFile))
         {
-            Log "Tracing to: $TraceFile"
             $traceFileForCode = $traceFile.Replace("\", "\\")
         }
 
@@ -881,6 +883,7 @@ Function CreateTraceListener($exchangeService)
 		    {
 			    private StreamWriter _traceStream = null;
                 private string _lastResponse = String.Empty;
+                private string _traceFileFullPath = String.Empty;
 
 			    public EWSTracer(string traceFileName = "$traceFileForCode" )
 			    {
@@ -888,6 +891,8 @@ Function CreateTraceListener($exchangeService)
 				    {
                         if (!String.IsNullOrEmpty(traceFileName))
 					        _traceStream = File.AppendText(traceFileName);
+                        FileInfo fi = new FileInfo(traceFileName);
+                        _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
 				    }
 				    catch { }
                 }
@@ -931,6 +936,11 @@ Function CreateTraceListener($exchangeService)
                 {
                     get { return _lastResponse; }
                 }
+
+                public string TraceFileFullPath
+                {
+                    get { return _traceFileFullPath; }
+                }
 		    }
 "@
 
@@ -941,6 +951,10 @@ Function CreateTraceListener($exchangeService)
 
         # Attach the trace listener to the Exchange service
         $exchangeService.TraceListener = $script:Tracer
+        if (![String]::IsNullOrEmpty($TraceFile))
+        {
+            Log "Tracing to: $($script:Tracer.TraceFileFullPath)"
+        }
     }
 }
 
@@ -1028,8 +1042,8 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
     if ($Impersonate)
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
-	}
+        $exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
+    }
 
     # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
     if (![String]::IsNullOrEmpty($EWSManagedApiPath))
@@ -1399,31 +1413,40 @@ Function RemoveProcessedItemsFromList()
                 }
                 else
                 {
-                    # This is most likely a temporary error, so we don't remove the item from the list
-                    $retryCount = 0
-                    if ( $script:itemRetryCount.ContainsKey($requestedItems[$i].UniqueId) )
-                        { $retryCount = $script:itemRetryCount[$requestedItems[$i].UniqueId] }
-                    $retryCount++
-                    if ($retryCount -lt 4)
+                    $retryErrors = @("ErrorBatchProcessingStopped", "ErrorTimeoutExpired")
+                    if ( $retryErrors.Contains($results[$i].ErrorCode.ToString()) )
                     {
-                        LogVerbose "Error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item (attempt $retryCount): $($requestedItems[$i].UniqueId)"
-                        $script:itemRetryCount[$requestedItems[$i].UniqueId] = $retryCount
+                        # This is a known error to retry, so we don't remove the item from the list
+                        LogVerbose "Retriable batch error reported: $($results[$i].ErrorCode.ToString())"
                     }
                     else
                     {
-                        # We got an error 3 times in a row, so we'll admit defeat
-                        [void]$Items.Remove($requestedItems[$i])
-                        if (!$suppressErrors)
+                        # This is most likely a temporary error, so we don't remove the item from the list
+                        $retryCount = 0
+                        if ( $script:itemRetryCount.ContainsKey($requestedItems[$i].UniqueId) )
+                            { $retryCount = $script:itemRetryCount[$requestedItems[$i].UniqueId] }
+                        $retryCount++
+                        if ($retryCount -lt 4)
                         {
-                            if ([String]::IsNullOrEmpty($results[$i].MessageText))
+                            LogVerbose "Error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item (attempt $retryCount): $($requestedItems[$i].UniqueId)"
+                            $script:itemRetryCount[$requestedItems[$i].UniqueId] = $retryCount
+                        }
+                        else
+                        {
+                            # We got an error 3 times in a row, so we'll admit defeat
+                            [void]$Items.Remove($requestedItems[$i])
+                            if (!$suppressErrors)
                             {
-                                Log "Permanent error $($results[$i].ErrorCode) reported for item: $($requestedItems[$i].UniqueId)" Red
+                                if ([String]::IsNullOrEmpty($results[$i].MessageText))
+                                {
+                                    Log "Permanent error $($results[$i].ErrorCode) reported for item: $($requestedItems[$i].UniqueId)" Red
+                                }
+                                else
+                                {
+                                    Log "Permanent error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item: $($requestedItems[$i].UniqueId)" Red
+                                }
+                                $permanentFailures++
                             }
-                            else
-                            {
-                                Log "Permanent error $($results[$i].ErrorCode) ($($results[$i].MessageText)) reported for item: $($requestedItems[$i].UniqueId)" Red
-                            }
-                            $permanentFailures++
                         }
                     }
                 }
@@ -1483,13 +1506,15 @@ Function ThrottledBatchMove()
         $progressActivity = "Moving items"
     }
     $totalItems = $ItemsToMove.Count
-    Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
     $timeoutErrorCount = 0
 
+    $percentComplete = -1
+    Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete $percentComplete
+
+    $script:deleteIds = [Activator]::CreateInstance($genericItemIdList) # This is used to check that items were deleted once moved (only happens when moving between public folders)
     while ( !$finished )
     {
 	    $script:moveIds = [Activator]::CreateInstance($genericItemIdList)
-        $script:deleteIds = [Activator]::CreateInstance($genericItemIdList) # This is used to check that items were deleted once moved (only happens when moving between public folders)
 
         LogVerbose "Current batch size is $($script:currentBatchSize)"
         
@@ -1517,6 +1542,11 @@ Function ThrottledBatchMove()
                         {
                             $deleteIds.Add($ItemsToMove[$i])
                             LogVerbose "Added to delete (due to public folder move): $($ItemsToMove[$i])"
+                        }
+                        elseif ($Copy -and $DeleteItems)
+                        {
+                            $deleteIds.Add($ItemsToMove[$i])
+                            LogVerbose "Added to delete: $($ItemsToMove[$i])"
                         }
                     }
                 }
@@ -1676,13 +1706,13 @@ Function ThrottledBatchMove()
         if ($ItemsToMove.Count -eq 0)
         {
             $finished = $True
-            Write-Progress -Activity $progressActivity -Status "100% complete" -Completed
         }
     }
+    Write-Progress -Activity $progressActivity -Completed
 
     if ($script:deleteIds.Count -gt 0)
     {
-        # We have a list of items to delete (i.e. Move succeeded, but we are processing public folders so need to ensure that the source item no longer exists)
+        # We have a list of items to delete
         ThrottledBatchDelete $script:deleteIds -SuppressNotFoundErrors $true
     }
 }
@@ -1692,7 +1722,7 @@ Function ThrottledBatchDelete()
     # Send request to delete items, allowing for throttling (which in this case is likely to manifest as time-out errors)
     param (
         $ItemsToDelete,
-        $BatchSize = 500,
+        $BatchSize = 100,
         $SuppressNotFoundErrors = $false
     )
 
@@ -1709,8 +1739,11 @@ Function ThrottledBatchDelete()
     
     $finished = $false
     $totalItems = $ItemsToDelete.Count
-    Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete 0
-    $consecutiveErrors = 0
+    $consecutive401Errors = 0
+    $timeoutErrorCount = 0
+
+    $percentComplete = -1
+    Write-Progress -Activity $progressActivity -Status "0% complete" -PercentComplete $percentComplete   
 
     while ( !$finished )
     {
@@ -1732,46 +1765,91 @@ Function ThrottledBatchDelete()
             LogVerbose "Sending batch request to delete $($deleteIds.Count) items ($($ItemsToDelete.Count) remaining)"
             SetClientRequestId $script:sourceService
 			$results = $script:sourceService.DeleteItems( $deleteIds, [Microsoft.Exchange.WebServices.Data.DeleteMode]::SoftDelete, [Microsoft.Exchange.WebServices.Data.SendCancellationsMode]::SendToNone, $null )
-            $consecutiveErrors = 0 # Reset the consecutive error count, as if we reach this point then this request succeeded with no error
+            $consecutive401Errors = 0 # Reset the consecutive error count, as if we reach this point then this request succeeded with no error
         }
         catch
         {
-            # We reduce the batch size if we encounter an error (sometimes throttling does not return a throttled response, this can happen if the EWS request is proxied, and the proxied request times out)
-            if ($BatchSize -gt 50)
+            if (Throttled)
             {
-                $BatchSize = [int]($BatchSize * 0.8)
-                $script:MaxBatchSize = $BatchSize
-                LogVerbose "Batch size reduced to $BatchSize"
             }
             else
             {
-                # If we've already reached a batch size of 50 or less, we set it to 10 (this is the minimum we reduce to)
-                if ($BatchSize -ne 10)
+                if ($Error[0].Exception)
                 {
-                    $BatchSize = 10
-                    LogVerbose "Batch size set to 10"
+                    if ($Error[0].Exception.Message.Contains("(401) Unauthorized."))
+                    {
+                        # This is most likely an issue with the OAuth token.
+                        $consecutive401Errors++
+                        if ( ($consecutive401Errors -lt 2) -and $OAuth)
+                        {
+                            Log "Access denied response - checking OAuth token"
+                            ApplyEWSOauthCredentials
+                        }
+                        else
+                        {
+                            Log "Consecutive access denied errors encountered - stopping processing" Red
+                            Exit
+                        }
+                    }
+                    elseif ($Error[0].Exception.InnerException -and $Error[0].Exception.InnerException.ToString().Contains("The operation has timed out"))
+                    {
+                        # We've probably been throttled, so we'll reduce the batch size and try again
+                        if ($script:currentBatchSize -gt 1)
+                        {
+                            LogVerbose "Timeout error received"
+                            DecreaseBatchSize
+                        }
+                        else
+                        {
+                            # We are at minimum batch size (1) and still timing out.  If we get too many of these, we'll stop processing as it implies an issue that needs investigating.
+                            # With a batch size of 1, we'd expect a throttling response rather than a timeout
+                            $timeoutErrorCount++
+                            if ($timeoutErrorCount -gt 3)
+                            {
+                                Log "Too many timeout errors received, halting processing" Red
+                                $finished = $true
+                            }
+                        }
+                    }
                 }
+
+                # We reduce the batch size if we encounter an error (sometimes throttling does not return a throttled response, this can happen if the EWS request is proxied, and the proxied request times out)
+                if ($BatchSize -gt 50)
+                {
+                    $BatchSize = [int]($BatchSize * 0.8)
+                    $script:MaxBatchSize = $BatchSize
+                    LogVerbose "Batch size reduced to $BatchSize"
+                }
+                else
+                {
+                    # If we've already reached a batch size of 50 or less, we set it to 10 (this is the minimum we reduce to)
+                    if ($BatchSize -ne 10)
+                    {
+                        $BatchSize = 10
+                        LogVerbose "Batch size set to 10"
+                    }
+                }
+                if ( -not (Throttled) )
+                {
+                    $consecutiveErrors++
+                    try
+                    {
+                        Log "Unexpected error: $($Error[0].Exception.InnerException.ToString())" Red
+                    }
+                    catch
+                    {
+                        Log "Unexpected error: $($Error[1])" Red
+                    }
+                    $finished = ($consecutiveErrors -gt 9) # If we have 10 errors in a row, we stop processing
+                }
+                ApplyEWSOauthCredentials
             }
-            if ( -not (Throttled) )
-            {
-                $consecutiveErrors++
-                try
-                {
-                    Log "Unexpected error: $($Error[0].Exception.InnerException.ToString())" Red
-                }
-                catch
-                {
-                    Log "Unexpected error: $($Error[1])" Red
-                }
-                $finished = ($consecutiveErrors -gt 9) # If we have 10 errors in a row, we stop processing
-            }
-            ApplyEWSOauthCredentials
         }
 
         RemoveProcessedItemsFromList $deleteIds $results $SuppressNotFoundErrors $ItemsToDelete
 
         $percentComplete = ( ($totalItems - $ItemsToDelete.Count) / $totalItems ) * 100
-        Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
+        Write-Progress -Activity $progressActivity -Status "$($percentComplete.ToString("0.#"))% complete" -PercentComplete $percentComplete
 
         if ($ItemsToDelete.Count -eq 0)
         {
@@ -1875,7 +1953,27 @@ Function MoveItems()
         $action = "Move"
         $actioning = "Moving"
     }
-	Log "$actioning from $($SourceMailbox):$(GetFolderPath($SourceFolderObject)) to $($TargetMailbox):$(GetFolderPath($TargetFolderObject))" White
+
+    $folderSourceInfo = $SourceMailbox
+    if ($SourcePublicFolders)
+    {
+        $folderSourceInfo = "Public Folders ($SourceMailbox)"
+    }
+    elseif ($SourceArchive)
+    {
+        $folderSourceInfo = "Archive ($SourceMailbox)"
+    }
+    $folderTargetInfo = $TargetMailbox
+    if ($TargetPublicFolders)
+    {
+        $folderTargetInfo = "Public Folders ($TargetMailbox)"
+    }
+    elseif ($TargetArchive)
+    {
+        $folderTargetInfo = "Archive ($TargetMailbox)"
+    }
+
+	Log "$actioning from $($folderSourceInfo):$(GetFolderPath($SourceFolderObject)) to $($folderTargetInfo):$(GetFolderPath($TargetFolderObject))" White
 	
     if ($SourcePublicFolders)
     {
@@ -2039,7 +2137,13 @@ Function MoveItems()
 
     if ( $itemsToMove.Count -gt 0 )
     {
-        Log "$($itemsToMove.Count) items found; attempting to $($action.ToLower())" Green
+        if ($Copy -and $Delete)
+        {
+            Log "$($itemsToMove.Count) items found; attempting to copy then delete" Green
+        }
+        else {
+            Log "$($itemsToMove.Count) items found; attempting to $($action.ToLower())" Green
+        }
         $script:totalItemsAffected += $itemsToMove.Count
         ThrottledBatchMove $itemsToMove $TargetFolderObject.Id $Copy
 
@@ -2050,7 +2154,7 @@ Function MoveItems()
             SetPublicFolderHeirarchyHeaders $script:sourceService $SourceMailbox
         }  
         $SourceFolderObject = ThrottledFolderBind $SourceFolderObject.Id $null $script:sourceService
-        Log "$($SourceMailbox):$(GetFolderPath($SourceFolderObject)) processed, now contains $($SourceFolderObject.TotalCount) items(s)" White
+        Log "$($folderSourceInfo):$(GetFolderPath($SourceFolderObject)) processed, now contains $($SourceFolderObject.TotalCount) items(s)" White
     }
     else
     {
@@ -2689,9 +2793,19 @@ if (!(LoadEWSManagedAPI))
 }
   
 # Check whether parameters make sense
-if ($Delete -and $Copy)
+if ($DeleteItems -and $Copy)
 {
-    throw "Cannot -Delete and -Copy, please use only one of these switches and try again."
+    Log "Items successfully copied will be deleted"
+}
+elseif ($Delete -and $Copy)
+{
+    Log "Cannot use -Delete with -Copy (folders cannot be deleted as they will not be empty)"
+    exit
+}
+elseif ($DeleteItems -and !$Copy)
+{
+    Log "Cannot use -DeleteItems without -Copy"
+    exit
 }
 
 if ($null -eq $MergeFolderList)

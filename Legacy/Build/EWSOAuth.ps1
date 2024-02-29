@@ -84,7 +84,7 @@ param (
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.3
+# EWS/OAuth library version: 1.0.4
 
 function LoadLibraries()
 {
@@ -624,7 +624,6 @@ Function CreateTraceListener($exchangeService)
 
         if (![String]::IsNullOrEmpty($TraceFile))
         {
-            Log "Tracing to: $TraceFile"
             $traceFileForCode = $traceFile.Replace("\", "\\")
         }
 
@@ -639,6 +638,7 @@ Function CreateTraceListener($exchangeService)
 		    {
 			    private StreamWriter _traceStream = null;
                 private string _lastResponse = String.Empty;
+                private string _traceFileFullPath = String.Empty;
 
 			    public EWSTracer(string traceFileName = "$traceFileForCode" )
 			    {
@@ -646,6 +646,8 @@ Function CreateTraceListener($exchangeService)
 				    {
                         if (!String.IsNullOrEmpty(traceFileName))
 					        _traceStream = File.AppendText(traceFileName);
+                        FileInfo fi = new FileInfo(traceFileName);
+                        _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
 				    }
 				    catch { }
                 }
@@ -689,6 +691,11 @@ Function CreateTraceListener($exchangeService)
                 {
                     get { return _lastResponse; }
                 }
+
+                public string TraceFileFullPath
+                {
+                    get { return _traceFileFullPath; }
+                }
 		    }
 "@
 
@@ -699,6 +706,10 @@ Function CreateTraceListener($exchangeService)
 
         # Attach the trace listener to the Exchange service
         $exchangeService.TraceListener = $script:Tracer
+        if (![String]::IsNullOrEmpty($TraceFile))
+        {
+            Log "Tracing to: $($script:Tracer.TraceFileFullPath)"
+        }
     }
 }
 
@@ -786,8 +797,8 @@ function CreateService($smtpAddress, $impersonatedAddress = "")
     $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
     if ($Impersonate)
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
-	}
+        $exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
+    }
 
     # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
     if (![String]::IsNullOrEmpty($EWSManagedApiPath))
