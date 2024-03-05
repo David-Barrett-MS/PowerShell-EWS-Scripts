@@ -196,7 +196,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.3.9"
+$script:ScriptVersion = "1.4.0"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -1397,7 +1397,11 @@ Function RemoveProcessedItemsFromList()
                 if ( $permanentErrors.Contains($results[$i].ErrorCode.ToString()) )
                 {
                     # This is a permanent error, so we remove the item from the list
+
+                    # Check if this item is in the deleted list (and if so remove it)
+                    if ($null -ne $script:deleteIds -and $script:deleteIds.Contains($requestedItems[$i])) { [void]$script:deleteIds.Remove($requestedItems[$i]) }                            
                     [void]$Items.Remove($requestedItems[$i])
+
                     if (!$suppressErrors)
                     {
                         if ([String]::IsNullOrEmpty($results[$i].MessageText))
@@ -1434,7 +1438,9 @@ Function RemoveProcessedItemsFromList()
                         else
                         {
                             # We got an error 3 times in a row, so we'll admit defeat
+                            if ($null -ne $script:deleteIds -and $script:deleteIds.Contains($requestedItems[$i])) { [void]$script:deleteIds.Remove($requestedItems[$i]) }                            
                             [void]$Items.Remove($requestedItems[$i])
+
                             if (!$suppressErrors)
                             {
                                 if ([String]::IsNullOrEmpty($results[$i].MessageText))
@@ -1540,12 +1546,12 @@ Function ThrottledBatchMove()
                         LogVerbose "Added to move/copy batch: $($ItemsToMove[$i])"
                         if (!$Copy -and $script:publicFolders -and $DeleteMovedPublicFolderItems)
                         {
-                            $deleteIds.Add($ItemsToMove[$i])
+                            $script:deleteIds.Add($ItemsToMove[$i])
                             LogVerbose "Added to delete (due to public folder move): $($ItemsToMove[$i])"
                         }
                         elseif ($Copy -and $DeleteItems)
                         {
-                            $deleteIds.Add($ItemsToMove[$i])
+                            $script:deleteIds.Add($ItemsToMove[$i])
                             LogVerbose "Added to delete: $($ItemsToMove[$i])"
                         }
                     }

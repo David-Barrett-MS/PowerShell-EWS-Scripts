@@ -84,7 +84,7 @@ param (
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.4
+# EWS/OAuth library version: 1.0.5
 
 function LoadLibraries()
 {
