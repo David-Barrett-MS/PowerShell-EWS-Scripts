@@ -196,7 +196,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.4.0"
+$script:ScriptVersion = "1.4.1"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -329,7 +329,7 @@ Function ReportError($Context)
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.4
+# EWS/OAuth library version: 1.0.5
 
 function LoadLibraries()
 {
@@ -865,72 +865,58 @@ Function CreateTraceListener($exchangeService)
 
     if ($null -eq $script:Tracer)
     {
-        $traceFileForCode = ""
-
-        if (![String]::IsNullOrEmpty($TraceFile))
-        {
-            $traceFileForCode = $traceFile.Replace("\", "\\")
-        }
-
         $TraceListenerClass = @"
-		    using System;
-		    using System.Text;
-		    using System.IO;
-		    using System.Threading;
-		    using Microsoft.Exchange.WebServices.Data;
-		
-		    public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
-		    {
-			    private StreamWriter _traceStream = null;
-                private string _lastResponse = String.Empty;
-                private string _traceFileFullPath = String.Empty;
+            using System;
+            using System.IO;
+            using Microsoft.Exchange.WebServices.Data;
 
-			    public EWSTracer(string traceFileName = "$traceFileForCode" )
-			    {
-				    try
-				    {
-                        if (!String.IsNullOrEmpty(traceFileName))
-					        _traceStream = File.AppendText(traceFileName);
-                        FileInfo fi = new FileInfo(traceFileName);
-                        _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
-				    }
-				    catch { }
+            public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+            {
+                private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
+                private string _traceFileFullPath = "No trace file configured";
+
+                public EWSTracer(string traceFileName = "" )
+                {
+                    if (!String.IsNullOrEmpty(traceFileName))
+                    {
+                        try
+                        {
+                            _traceStream = File.AppendText(traceFileName);
+                            FileInfo fi = new FileInfo(traceFileName);
+                            _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
+                        }
+                        catch { }
+                    }
                 }
 
-			    ~EWSTracer()
-			    {
-                    Close();
-			    }
-
                 public void Close()
-			    {
-				    try
-				    {
-					    _traceStream.Flush();
-					    _traceStream.Close();
-				    }
-				    catch { }
-			    }
+                {
+                    try
+                    {
+                        _traceStream.Flush();
+                        _traceStream.Close();
+                    }
+                    catch { }
+                }
 
-
-			    public void Trace(string traceType, string traceMessage)
-			    {
+                public void Trace(string traceType, string traceMessage)
+                {
                     if ( traceType.Equals("EwsResponse") )
                         _lastResponse = traceMessage;
-
-                    if ( traceType.Equals("EwsRequest") )
+                    else if ( traceType.Equals("EwsRequest") )
                         _lastResponse = String.Empty;
 
-				    if (_traceStream == null)
-					    return;
+                    if (_traceStream == null)
+                        return;
 
-					try
-					{
-						_traceStream.WriteLine(traceMessage);
-						_traceStream.Flush();
-					}
-					catch { }
-			    }
+                    try
+                    {
+                        _traceStream.WriteLine(traceMessage);
+                        _traceStream.Flush();
+                    }
+                    catch { }
+                }
 
                 public string LastResponse
                 {
@@ -941,13 +927,13 @@ Function CreateTraceListener($exchangeService)
                 {
                     get { return _traceFileFullPath; }
                 }
-		    }
+            }
 "@
 
         if ("EWSTracer" -as [type]) {} else {
             Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
         }
-        $script:Tracer=[EWSTracer]::new($traceFileForCode)
+        $script:Tracer=[EWSTracer]::new($TraceFile)
 
         # Attach the trace listener to the Exchange service
         $exchangeService.TraceListener = $script:Tracer
@@ -1080,6 +1066,11 @@ Function CreateAutoDiscoverService($exchangeService)
     return $autodiscover;
 }
 
+function SetArchiveMailboxHeaders($ExchangeService, $PrimarySmtpAddress)
+{
+    
+}
+
 function SetPublicFolderHeirarchyHeaders($ExchangeService, $AutodiscoverAddress)
 {
     # Sets the X-PublicFolderMailbox and X-AnchorMailbox properties for a request to public folders
@@ -1176,7 +1167,6 @@ Function SetPublicFolderContentHeaders($ExchangeService, $PublicFolder)
         {
             if ($extendedProperty.PropertyDefinition -eq $script:PR_REPLICA_LIST)
             {
-                #[byte[]]$ByteArr = ([byte[]])$extendedProperty.Value;
                 $replicaGuid =[System.Text.Encoding]::ASCII.GetString($extendedProperty.Value, 0, 36)
                 break
             }
@@ -1634,7 +1624,16 @@ Function ThrottledBatchMove()
                     }
                     else
                     {
-                        LogVerbose "ERROR ON MOVE: $($Error[0].Exception.Message)"
+                        if ($Error[0].Exception.Message -eq "The mailbox operation failed.")
+                        {
+                            # This is a critical error
+                            Log "Critical error, halting processing: $($Error[0].Exception.Message)" Red
+                            $finished = $true
+                        }
+                        else
+                        {
+                            Log "UNEXPECTED ERROR ON MOVE: $($Error[0].Exception.Message)" Red
+                        }
                     }
                 }
                 else
@@ -1687,7 +1686,7 @@ Function ThrottledBatchMove()
                 if ($ItemsToMove.Count -gt 0)
                 {
                     # Some items failed to move, so remove these from the list of those to be deleted
-                    ForEach ($moveId in $ItemsToMove)
+                    ForEach ($moveId in $moveIds)
                     {
                         if ($script:deleteIds.Contains($moveId))
                         {
@@ -2874,7 +2873,7 @@ Else
 	ProcessMailbox
 }
 
-if ($null -eq $script:Tracer)
+if ($null -ne $script:Tracer)
 {
     $script:Tracer.Close()
 }
