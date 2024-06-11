@@ -1,4 +1,4 @@
-#
+﻿#
 # Merge-MailboxFolder.ps1
 #
 # By David Barrett, Microsoft Ltd. 2015-2023. Use at your own risk.  No warranties are given.
@@ -196,7 +196,8 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 50
 )
-$script:ScriptVersion = "1.4.1"
+
+$script:ScriptVersion = "1.4.2"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -2221,8 +2222,8 @@ Function MoveItems()
                             if ($WhatIf -and $CreateTargetFolder)
                             {
                                 Log "Target folder not created due to -WhatIf: $($SourceSubFolderObject.DisplayName)"
-                                $TargetFolderObject = New-Object PsObject
-                                $TargetFolderObject | Add-Member NoteProperty DisplayName $SourceSubFolderObject.DisplayName
+                                $TargetSubFolderObject = New-Object PsObject
+                                $TargetSubFolderObject | Add-Member NoteProperty DisplayName $SourceSubFolderObject.DisplayName
                             }
                             else
                             {
@@ -2232,42 +2233,51 @@ Function MoveItems()
                         }
                         elseif ($FindFolderResults.TotalCount -eq 0)
 				        {
-                            LogVerbose "Creating target folder $($SourceSubFolderObject.DisplayName)"
-                            if ( $SourceSubFolderObject.FolderClass -eq "IPF.Task" )
+                            if ($WhatIf)
                             {
-                                # Task folders need to be created as a TasksFolder, otherwise the EWS API returns an error (even though the folder creation succeeds)
-					            $TargetSubFolderObject = New-Object Microsoft.Exchange.WebServices.Data.TasksFolder($script:targetService)
+                                Log "Target folder not created due to -WhatIf: $($SourceSubFolderObject.DisplayName)"
+                                $TargetSubFolderObject = New-Object PsObject
+                                $TargetSubFolderObject | Add-Member NoteProperty DisplayName $SourceSubFolderObject.DisplayName
                             }
                             else
                             {
-					            $TargetSubFolderObject = New-Object Microsoft.Exchange.WebServices.Data.Folder($script:targetService)
-                                $TargetSubFolderObject.FolderClass = $SourceSubFolderObject.FolderClass
-                            }
-					        $TargetSubFolderObject.DisplayName = $SourceSubFolderObject.DisplayName
-                            try
-                            {
-                                SetClientRequestId $script:targetService
-					            $TargetSubFolderObject.Save($TargetFolderObject.Id)
-                            }
-                            catch
-                            {
-                                if (Throttled)
+                                LogVerbose "Creating target folder $($SourceSubFolderObject.DisplayName)"
+                                if ( $SourceSubFolderObject.FolderClass -eq "IPF.Task" )
                                 {
-                                    try
+                                    # Task folders need to be created as a TasksFolder, otherwise the EWS API returns an error (even though the folder creation succeeds)
+                                    $TargetSubFolderObject = New-Object Microsoft.Exchange.WebServices.Data.TasksFolder($script:targetService)
+                                }
+                                else
+                                {
+                                    $TargetSubFolderObject = New-Object Microsoft.Exchange.WebServices.Data.Folder($script:targetService)
+                                    $TargetSubFolderObject.FolderClass = $SourceSubFolderObject.FolderClass
+                                }
+                                $TargetSubFolderObject.DisplayName = $SourceSubFolderObject.DisplayName
+                                try
+                                {
+                                    SetClientRequestId $script:targetService
+                                    $TargetSubFolderObject.Save($TargetFolderObject.Id)
+                                }
+                                catch
+                                {
+                                    if (Throttled)
                                     {
-                                        SetClientRequestId $script:targetService
-					                    $TargetSubFolderObject.Save($TargetFolderObject.Id)
+                                        try
+                                        {
+                                            SetClientRequestId $script:targetService
+                                            $TargetSubFolderObject.Save($TargetFolderObject.Id)
+                                        }
+                                        catch
+                                        {
+                                            Log "FAILED TO CREATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)"
+                                            $TargetSubFolderObject = $null
+                                        }
                                     }
-                                    catch
+                                    else
                                     {
                                         Log "FAILED TO CREATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)"
                                         $TargetSubFolderObject = $null
                                     }
-                                }
-                                else
-                                {
-                                    Log "FAILED TO CREATE TARGET FOLDER: $($SourceSubFolderObject.DisplayName)"
-                                    $TargetSubFolderObject = $null
                                 }
                             }
 				        }
