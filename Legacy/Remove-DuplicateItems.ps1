@@ -125,7 +125,7 @@ param (
     [switch]$WhatIf
 
 )
-$script:ScriptVersion = "1.2.1"
+$script:ScriptVersion = "1.2.2"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -1317,7 +1317,7 @@ function IsDuplicateAppointment($item)
         $subject_cmp = $item.Subject
         if ([String]::IsNullOrEmpty($subject_cmp))
         {
-            $subject_cmp = "[No Subject]" # If the subject is blank, we need to give it an arbitrary value to prevent checks failing
+            $subject_cmp = "[No Subject (Appointment)]" # If the subject is blank, we need to give it an arbitrary value to prevent checks failing
         }
         if ($script:calsubjects.ContainsKey($subject_cmp))
         {
@@ -1423,7 +1423,7 @@ function IsDuplicateEmail($item)
     $subject_cmp = $item.Subject
     if ([String]::IsNullOrEmpty($subject_cmp))
     {
-        $subject_cmp = "[No Subject]" # If the subject is blank, we need to give it an arbitrary value to prevent checks failing
+        $subject_cmp = "[No Subject (Email)]" # If the subject is blank, we need to give it an arbitrary value to prevent checks failing
     }
     if ($script:msgsubjects.ContainsKey($subject_cmp))
     {
@@ -1466,6 +1466,45 @@ function IsDuplicateEmail($item)
     return $false
 }
 
+function IsDuplicateTask($item)
+{
+    # Test for duplicate task
+
+    $subject_cmp = $item.Subject
+    if ([String]::IsNullOrEmpty($subject_cmp))
+    {
+        $subject_cmp = "[No Subject (Task)]" # If the subject is blank, we need to give it an arbitrary value to prevent checks failing
+    }
+    if ($script:tasksubjects.ContainsKey($subject_cmp))
+    {
+        # Duplicate subject exists, so we now check the start and end date to confirm if this is a duplicate
+        $dupSubjects = $script:tasksubjects[$subject_cmp]
+        LogDebug "$($dupSubjects.Count) matching task subjects: $subject_cmp"
+        foreach ($dupSubject in $dupSubjects)
+        {
+            if (($dupSubject.StartDate -eq $item.StartDate) -and ($dupSubject.Status -eq $item.Status) -and ($dupSubject.Owner -eq $item.Owner))
+            {
+                # Same subject, start date, status and owner
+                LogVerbose "Duplicate task found: $subject_cmp"
+                return $true
+            }
+            else
+            {
+                LogDebug "Start: $($dupSubject.StartDate) and $($item.StartDate)    Status: $($dupSubject.Status) and $($item.Status)"
+            }
+        }
+        # Add this item to the list of items with the same subject (as it is not a duplicate)
+        $script:tasksubjects[$subject_cmp] += $item
+    }
+    else
+    {
+        # Add this to our subject list
+        LogDebug "New task subject: $subject_cmp"
+        $script:tasksubjects.Add($subject_cmp, @($item))
+    }
+    return $false
+}
+
 function IsDuplicate($item)
 {
     # Test if item is duplicate (the check we do depends upon the item type)
@@ -1493,7 +1532,11 @@ function IsDuplicate($item)
     {
         return IsDuplicateContact($item)
     }
-    LogVerbose "Unsupported item type being ignored: $($item.ItemClass)"
+    if ($item.ItemClass.Equals("IPM.Task"))
+    {
+        return IsDuplicateTask($item)
+    }    
+    LogVerbose "Unsupported item type ignored: $($item.ItemClass)"
     return $false
 }
 
@@ -1537,6 +1580,7 @@ function SearchForDuplicates($folder)
         $script:icaluids = New-Object 'System.Collections.Generic.Dictionary[System.String,System.Object]'
         $script:imsgids = New-Object 'System.Collections.Generic.Dictionary[System.String,System.Object]'
         $script:displayNames = New-Object 'System.Collections.Generic.Dictionary[System.String,System.Object]'
+        $script:tasksubjects = New-Object 'System.Collections.Generic.Dictionary[System.String,System.Object]'
     }
     $dupeCount = 0
 
@@ -1548,16 +1592,24 @@ function SearchForDuplicates($folder)
     $moreItems = $true
     $view = New-Object Microsoft.Exchange.WebServices.Data.ItemView(500, 0)
     $propset = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly)
+
+    # Item properties (applicable to all item types)
+    $propset.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass)
     $propset.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject)
     $propset.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::DateTimeCreated)
+    # Appointment properties
     $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::Start)
     $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::End)
     $propset.Add([Microsoft.Exchange.WebServices.Data.AppointmentSchema]::ICalUid)
+    # Email properties
     $propset.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::InternetMessageId)
     $propset.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::DateTimeReceived)
     $propset.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::DateTimeSent)
     $propset.Add([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::IsFromMe)
-    $propset.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::ItemClass)
+    # Task properties
+    $propset.Add([Microsoft.Exchange.WebServices.Data.TaskSchema]::StartDate)
+    $propset.Add([Microsoft.Exchange.WebServices.Data.TaskSchema]::Status)
+    $propset.Add([Microsoft.Exchange.WebServices.Data.TaskSchema]::Owner)
 
     $view.PropertySet = $propset
 
@@ -2223,10 +2275,33 @@ function ProcessMailbox()
     $Folder = $Null
     if ([String]::IsNullOrEmpty($FolderPath))
     {
-        $FolderPath = "WellKnownFolderName.MsgFolderRoot"
+        if ($Archive)
+        {
+            $FolderPath = "WellKnownFolderName.ArchiveMsgFolderRoot"
+        }
+        else
+        {
+            $FolderPath = "WellKnownFolderName.MsgFolderRoot"
+        }
+    }
+    elseif ($Archive)
+    {
+        if ($FolderPath.ToLower().StartsWith("wellknownfoldername") -and !$FolderPath.ToLower().StartsWith("wellknownfoldername.archive"))
+        {
+            Log "Conflicting parameters detected: Archive requested, but folder path includes WellKnownFolderName outside the archive (so will target primary mailbox)" Red
+            return
+        }
     }
 
-    $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $Mailbox )
+    if ($Archive)
+    {
+        $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::ArchiveMsgFolderRoot, $Mailbox )
+    }
+    else 
+    {
+        $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $Mailbox )
+    }
+    
     $rootFolder = ThrottledFolderBind $folderId $null $script:service
 
 	$Folder = GetFolder $rootFolder $FolderPath
@@ -2334,4 +2409,11 @@ Else
 {
 	# Process as single mailbox
 	ProcessMailbox
+}
+
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
+if ($script:logFileStreamWriter)
+{
+    $script:logFileStreamWriter.Close()
+    $script:logFileStreamWriter.Dispose()
 }
