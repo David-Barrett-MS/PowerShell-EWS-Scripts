@@ -13,160 +13,184 @@
 # THE SOFTWARE.
 
 param (
-	[Parameter(Position=0,Mandatory=$False,HelpMessage="Specifies the mailbox to be accessed")]
-	[ValidateNotNullOrEmpty()]
-	[string]$Mailbox,
+    [Parameter(Position=0,Mandatory=$True,HelpMessage="Specifies the mailbox to be accessed.")]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to search for NDRs - if omitted, the Inbox folder is assumed")]
-	[string]$FolderPath,
+    [Parameter(Mandatory=$False,HelpMessage="Folder to search for NDRs - if omitted, the Inbox folder is assumed.")]
+    [string]$FolderPath,
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, messages will be saved to this folder instead of sent from the mailbox.  You can specify multiple Pickup folders using an array, and a round robin process will be followed")]
-	$SaveToPickupFolder = $null,
+    [Parameter(Mandatory=$False,HelpMessage="If set, messages will be saved to this folder instead of sent from the mailbox.  You can specify multiple Pickup folders using an array, and a round robin process will be followed.")]
+    $SaveToPickupFolder = $null,
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, any messages that can't be saved to Pickup folder will instead be saved to this folder (for debugging purposes)")]
-	$FailPickupFolder = $null,
+    [Parameter(Mandatory=$False,HelpMessage="If set, any messages that can't be saved to Pickup folder will instead be saved to this folder (for debugging purposes).")]
+    $FailPickupFolder = $null,
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, this return-path will be stamped on resent messages")]
-	[string]$ReturnPath = "",
+    [Parameter(Mandatory=$False,HelpMessage="If set, this return-path will be stamped on resent messages.")]
+    [string]$ReturnPath = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, we'll forward all messages directly to target server (based on MX or specified SMTP server list)")]
-	[switch]$SendUsingSMTP,
+    [Parameter(Mandatory=$False,HelpMessage="If set, we'll forward all messages directly to target server (based on MX or specified SMTP server list)")]
+    [switch]$SendUsingSMTP,
 
-	[Parameter(Mandatory=$False,HelpMessage="A list of SMTP servers for specific target email addresses (or domains).  Any listed here will be used in preference to MX.")]
-	$SMTPServerList,
+    [Parameter(Mandatory=$False,HelpMessage="A list of SMTP servers for specific target email addresses (or domains).  Any listed here will be used in preference to MX.")]
+    $SMTPServerList,
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, messages will be written directly into the recipients' mailbox(es).  Requires the authenticating account to have ApplicationImpersonation rights on those mailboxes.")]
-	[switch]$WriteDirectlyToRecipientMailbox,
+    [Parameter(Mandatory=$False,HelpMessage="If set, messages will be written directly into the recipients' mailbox(es).  Requires the authenticating account to have ApplicationImpersonation rights on those mailboxes.")]
+    [switch]$WriteDirectlyToRecipientMailbox,
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to move processed items into")]
-	[string]$MoveProcessedItemsToFolder = "",
+    [Parameter(Mandatory=$False,HelpMessage="Folder to move processed items into.")]
+    [string]$MoveProcessedItemsToFolder = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to move failed items into (those we attempted to process but were unable to)")]
-	[string]$MoveFailedItemsToFolder = "",
+    [Parameter(Mandatory=$False,HelpMessage="Folder to move failed items into (those we attempted to process but were unable to).")]
+    [string]$MoveFailedItemsToFolder = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="Folder to move encrypted items into (we won't attempt to process them)")]
-	[string]$MoveEncryptedItemsToFolder = "",
+    [Parameter(Mandatory=$False,HelpMessage="Folder to move encrypted items into (we won't attempt to process them).")]
+    [string]$MoveEncryptedItemsToFolder = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, any items that are encrypted will have the encrypted content removed")]
-	[switch]$RemoveEncryptedAttachments,
+    [Parameter(Mandatory=$False,HelpMessage="If set, any items that are encrypted will have the encrypted content removed.")]
+    [switch]$RemoveEncryptedAttachments,
 
-	[Parameter(Mandatory=$False,HelpMessage="If an item is processed, but couldn't be moved, then the Id will be added to this file so that it can be ignored on future runs")]	
-	[string]$IgnoreIdsLog = "",
+    [Parameter(Mandatory=$False,HelpMessage="If an item is processed, but couldn't be moved, then the Id will be added to this file so that it can be ignored on future runs.")]	
+    [string]$IgnoreIdsLog = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="If set, all items processed (or failed to process) will be logged to the ignore file (recommended if messages are not being moved once processed)")]	
+    [Parameter(Mandatory=$False,HelpMessage="If set, all items processed (or failed to process) will be logged to the ignore file (recommended if messages are not being moved once processed).")]	
     [switch]$AddAllItemsToIgnoreLog,
 
-	[Parameter(Mandatory=$False,HelpMessage="Batch size for processing NDRs (the number of items queried from the Inbox at one time)")]
-	[int]$BatchSize = -1,
+    [Parameter(Mandatory=$False,HelpMessage="Batch size for processing NDRs (the number of items queried from the Inbox at one time).")]
+    [int]$BatchSize = -1,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, checks for the messageclass are done clientside so that no search is required on the server.")]
-	[switch]$FilterNDRsClientside,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, checks for the messageclass are done clientside so that no search is required on the server.")]
+    [switch]$FilterNDRsClientside,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, only this number of items will be processed (script will stop when this number is reached)")]
-	[int]$MaxItemsToProcess = -1,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only this number of items will be processed (script will stop when this number is reached).")]
+    [int]$MaxItemsToProcess = -1,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, any messages larger than this will be failed (without being sent)")]
-	[int]$MaxMessageSize = -1,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, any messages larger than this will be failed (without being sent).")]
+    [int]$MaxMessageSize = -1,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, message will only be resent to recipient(s) listed here")]
-	$OnlyResendTo,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, message will only be resent to the provided recipient(s).")]
+    $OnlyResendTo,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, specified recipient(s) will be added to the message")]
-	$AddResendTo,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, specified recipient(s) will be added to the message.")]
+    $AddResendTo,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, any messages found that have a blank From: header will have this address applied as the sender")]	
-	[string]$DefaultFromAddress = "",
+    [Parameter(Mandatory=$False,HelpMessage="If specified, any messages found that have a blank From: header will have this address applied as the sender.")]	
+    [string]$DefaultFromAddress = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, message will only be resent if the recipient specified in OnlyResendTo parameter was an original recipient of the email.  If this isn't specified, then all messages will be resent.")]
-	[switch]$ConfirmResendAddress,
+    [Parameter(Mandatory=$False,HelpMessage="If specified, message will only be resent if the recipient specified in OnlyResendTo parameter was an original recipient of the email.  If this isn't specified, then all messages will be resent.")]
+    [switch]$ConfirmResendAddress,
 
-	[Parameter(Mandatory=$False,HelpMessage="If specified, a message will be sent to this recipient when the script has completed.")]
-	[string]$SendCompletionEmailTo = "",
+    [Parameter(Mandatory=$False,HelpMessage="If original message not included as attachment, attempt to find it in Sent Items.")]
+    [switch]$SearchSentItems,
 
-	[Parameter(Mandatory=$False,HelpMessage="If original message not included as attachment, attempt to find it in Sent Items.")]
-	[switch]$SearchSentItems,
+    [Parameter(Mandatory=$False,HelpMessage="Output statistics to the specified CSV file.")]
+    [string]$StatsCSV,
 
-	[Parameter(Mandatory=$False,HelpMessage="Output statistics to the specified CSV file")]
-	[string]$StatsCSV,
-
-	[Parameter(Mandatory=$False,HelpMessage="When set, the script will not process any messages but will collect statistics from folder being processed")]
-	[switch]$CollectStatsOnly,
-
-	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS")]
+#>** EWS/OAUTH PARAMETERS START **#
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with EWS.")]
     [alias("Credential")]
     [System.Management.Automation.PSCredential]$Credentials,
 	
-	[Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for MFA enabled accounts) - this requires the ADAL dlls to be available.")]
-	[switch]$OAuth,
+    [Parameter(Mandatory=$False,HelpMessage="If set, then we will use OAuth to access the mailbox (required for Office 365)")]
+    [switch]$OAuth,
 
-	[Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
-	[string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [string]$OAuthClientId = "8799ab60-ace5-4bda-b31f-621c9f6668db",
 
-	[Parameter(Mandatory=$False,HelpMessage="The tenant Id in which the application is registered.  If missing, application is assumed to be multi-tenant and the common log-in URL will be used.")]
-	[string]$OAuthTenantId = "",
+    [Parameter(Mandatory=$False,HelpMessage="The tenant Id (application must be registered in the same tenant being accessed).")]
+    [string]$OAuthTenantId = "",
 
-	[Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-	[string]$OAuthRedirectUri = "http://localhost/code",
-				
-	[Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox")]
-	[switch]$Impersonate,
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
+    [string]$OAuthRedirectUri = "http://localhost/code",
 
-	[Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used)")]	
-	[string]$EwsUrl,
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
+    [string]$OAuthSecretKey = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
+    $OAuthCertificate = $null,
+
+    [Parameter(Mandatory=$False,HelpMessage="If set, OAuth tokens will be stored in global variables for access in other scripts/console.  These global variable will be checked by later scripts using delegate auth to prevent additional log-in prompts.")]	
+    [switch]$GlobalTokenStorage,
+
+    [Parameter(Mandatory=$False,HelpMessage="For debugging purposes.")]
+    [switch]$OAuthDebug,
+
+    [Parameter(Mandatory=$False,HelpMessage="A value greater than 0 enables token debugging (specify total number of token renewals to debug).")]	
+    $DebugTokenRenewal = 0,
+
+    [Parameter(Mandatory=$False,HelpMessage="Whether we are using impersonation to access the mailbox.")]
+    [switch]$Impersonate,
 	
-	[Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed)")]	
-	[string]$EWSManagedApiPath = "",
-	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate)")]	
-	[switch]$IgnoreSSLCertificate,
-	
-	[Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing autodiscover")]	
-	[switch]$AllowInsecureRedirection,
-	
-	[Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified")]	
-	[string]$LogFile = "",
+    [Parameter(Mandatory=$False,HelpMessage="EWS Url (if omitted, then autodiscover is used).")]	
+    [string]$EwsUrl,
 
-	[Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file")]	
-	[string]$TraceFile
+    [Parameter(Mandatory=$False,HelpMessage="If specified, requests are directed to Office 365 endpoint (this overrides -EwsUrl).")]
+    [switch]$Office365,
+	
+    [Parameter(Mandatory=$False,HelpMessage="If specified, only TLS 1.2 connections will be negotiated.")]
+    [switch]$ForceTLS12,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Path to managed API (if omitted, a search of standard paths is performed).")]	
+    [string]$EWSManagedApiPath = "",
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to ignore any SSL errors (e.g. invalid certificate).")]	
+    [switch]$IgnoreSSLCertificate,
+	
+    [Parameter(Mandatory=$False,HelpMessage="Whether to allow insecure redirects when performing AutoDiscover.")]	
+    [switch]$AllowInsecureRedirection,
+
+    [Parameter(Mandatory=$False,HelpMessage="User-Agent header that will be set on ExchangeService and AutodiscoverService objects.")]	
+    [string]$UserAgent = "https://github.com/David-Barrett-MS/PowerShell-EWS-Scripts",
+
+    [Parameter(Mandatory=$False,HelpMessage="Trace file - if specified, EWS tracing information is written to this file.")]	
+    [string]$TraceFile,
+#>** EWS/OAUTH PARAMETERS END **#
+
+#>** LOGGING PARAMETERS START **#
+    [Parameter(Mandatory=$False,HelpMessage="Log file - activity is logged to this file if specified.")]	
+    [string]$LogFile = "",
+
+    [Parameter(Mandatory=$False,HelpMessage="Enable verbose log file.  Verbose logging is written to the log whether -Verbose is enabled or not.")]	
+    [switch]$VerboseLogFile,
+
+    [Parameter(Mandatory=$False,HelpMessage="Enable debug log file.  Debug logging is written to the log whether -Debug is enabled or not.")]	
+    [switch]$DebugLogFile,
+
+    [Parameter(Mandatory=$False,HelpMessage="If selected, an optimised log file creator is used that should be signficantly faster (but may leave file lock applied if script is cancelled).")]
+    [switch]$FastFileLogging,
+#>** LOGGING PARAMETERS END **#
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, no actions (e.g. sending on) will be performed (but actions that would be taken will be logged).")]	
+    [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.4"
+$script:ScriptVersion = "1.2.6"
 
 # Define our functions
-
-$script:LastError = $Error[0]
-Function ErrorReported($Context)
-{
-    # Check for any error, and return the result ($true means a new error has been detected)
-
-    # We check for errors using $Error variable, as try...catch isn't reliable when remoting
-    if ([String]::IsNullOrEmpty($Error[0])) { return $false }
-
-    # We have an error, have we already reported it?
-    if ($Error[0] -eq $script:LastError) { return $false }
-
-    # New error, so log it and return $true
-    $script:LastError = $Error[0]
-    if ($Context)
-    {
-        Log "Error ($Context): $($Error[0])" Red
-    }
-    else
-    {
-        Log "Error: $($Error[0])" Red
-    }
-    return $true
-}
-
-Function ReportError($Context)
-{
-    # Reports error without returning the result
-    ErrorReported $Context | Out-Null
-}
+#>** LOGGING FUNCTIONS START **#
+$scriptStartTime = [DateTime]::Now
 
 Function LogToFile([string]$Details)
 {
 	if ( [String]::IsNullOrEmpty($LogFile) ) { return }
-    $logInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())   $Details"
+	"$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())   $Details" | Out-File $LogFile -Append
+}
+
+Function UpdateDetailsWithCallingMethod([string]$Details)
+{
+    # Update the log message with details of the function that logged it
+    $timeInfo = "$([DateTime]::Now.ToShortDateString()) $([DateTime]::Now.ToLongTimeString())"
+    $callingFunction = (Get-PSCallStack)[2].Command # The function we are interested in will always be frame 2 on the stack
+    if (![String]::IsNullOrEmpty($callingFunction))
+    {
+        return "$timeInfo [$callingFunction] $Details"
+    }
+    return "$timeInfo $Details"
+}
+
+Function LogToFile([string]$logInfo)
+{
+    if ( [String]::IsNullOrEmpty($LogFile) ) { return }
+    
     if ($FastFileLogging)
     {
         # Writing the log file using a FileStream (that we keep open) is significantly faster than using out-file (which opens, writes, then closes the file each time it is called)
@@ -202,22 +226,25 @@ Function LogToFile([string]$Details)
             }
         }
     }
+
 	$logInfo | Out-File $LogFile -Append
 }
 
-Function Log([string]$Details, [ConsoleColor]$Colour, [switch]$SuppressWriteToScreen)
+Function Log([string]$Details, [ConsoleColor]$Colour)
 {
     if ($Colour -eq $null)
     {
         $Colour = [ConsoleColor]::White
     }
-    if (!$SuppressWriteToScreen) { Write-Host $Details -ForegroundColor $Colour }
+    $Details = UpdateDetailsWithCallingMethod( $Details )
+    Write-Host $Details -ForegroundColor $Colour
     LogToFile $Details
 }
 Log "$($MyInvocation.MyCommand.Name) version $($script:ScriptVersion) starting" Green
 
 Function LogVerbose([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Verbose $Details
     if ( !$VerboseLogFile -and !$DebugLogFile -and ($VerbosePreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
@@ -225,10 +252,48 @@ Function LogVerbose([string]$Details)
 
 Function LogDebug([string]$Details)
 {
+    $Details = UpdateDetailsWithCallingMethod( $Details )
     Write-Debug $Details
     if (!$DebugLogFile -and ($DebugPreference -eq "SilentlyContinue") ) { return }
     LogToFile $Details
 }
+
+$script:LastError = $Error[0]
+Function ErrorReported($Context)
+{
+    # Check for any error, and return the result ($true means a new error has been detected)
+
+    # We check for errors using $Error variable, as try...catch isn't reliable when remoting
+    if ([String]::IsNullOrEmpty($Error[0])) { return $false }
+
+    # We have an error, have we already reported it?
+    if ($Error[0] -eq $script:LastError) { return $false }
+
+    # New error, so log it and return $true
+    $script:LastError = $Error[0]
+    if ($Context)
+    {
+        Log "ERROR ($Context): $($Error[0])" Red
+    }
+    else
+    {
+        $log = UpdateDetailsWithCallingMethod("ERROR: $($Error[0])")
+        Log $log Red
+    }
+    return $true
+}
+
+Function ReportError($Context)
+{
+    # Reports error without returning the result
+    ErrorReported $Context | Out-Null
+}
+#>** LOGGING FUNCTIONS END **#
+
+#>** EWS/OAUTH FUNCTIONS START **#
+
+# These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
+# EWS/OAuth library version: 1.0.5
 
 function LoadLibraries()
 {
@@ -244,16 +309,13 @@ function LoadLibraries()
         # First check if the dll is in current directory
         LogDebug "Searching for DLL: $dllName"
         $dll = $null
-        try
-        {
-            $dll = Get-ChildItem $dllName -ErrorAction SilentlyContinue
-        }
-        catch {}
+        $dll = Get-ChildItem $dllName -ErrorAction Ignore
 
         if ($searchProgramFiles)
         {
-            if ($dll -eq $null)
+            if ($null -eq $dll)
             {
+                Log "$dllName not found in current directory - searching Program Files folders" Yellow
 	            $dll = Get-ChildItem -Recurse "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
 	            if (!$dll)
 	            {
@@ -261,9 +323,8 @@ function LoadLibraries()
 	            }
             }
         }
-        $script:LastError = $Error[0] # We do this to suppress any errors encountered during the search above
 
-        if ($dll -eq $null)
+        if ($null -eq $dll)
         {
             Log "Unable to load locate $dll" Red
             return $false
@@ -290,26 +351,214 @@ function LoadLibraries()
     return $true
 }
 
-function LoadADAL
+function GetTokenWithCertificate
 {
-    # First of all, we check if ADAL is already available
-    # To do this, we simply try to instantiate an authentication context to the common log-on Url.  If we get an object back, we have ADAL
+    # We use MSAL with certificate auth
+    if (!$script:msalApiLoaded)
+    {
+        $msalLocation = @()
+        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
+        if (!$script:msalApiLoaded)
+        {
+            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
+            exit
+        }
+    }   
 
-    LogDebug "Checking for ADAL"
-    $authenticationContextCommon = $null
+    $cca = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
+    $cca = $cca.WithCertificate($OAuthCertificate)
+    $cca = $cca.WithTenantId($OAuthTenantId)
+    $cca = $cca.Build()
+
+    $scopes = New-Object System.Collections.Generic.List[string]
+    $scopes.Add("https://outlook.office365.com/.default")
+    $acquire = $cca.AcquireTokenForClient($scopes)
+    LogVerbose "Requesting token using certificate auth"
+    
     try
     {
-        $authenticationContextCommon = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
-    } catch {}
-    if ($authenticationContextCommon -ne $null)
+        $script:oauthToken = $acquire.ExecuteAsync().Result
+    }
+    catch
     {
-        LogVerbose "ADAL already available, no need to load dlls."
-        return $true
+        Log "Failed to obtain OAuth token: $Error" Red
+        exit # Failed to obtain a token
     }
 
-    # Load the ADAL libraries
-    $adalDllsLocation = @()
-    return $(LoadLibraries $false @("Microsoft.IdentityModel.Clients.ActiveDirectory.dll") ([ref]$adalDllsLocation) )
+    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    if ($null -ne $script:oAuthAccessToken)
+    {
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        $script:Impersonate = $true
+        return
+    }
+
+    # If we get here, we don't have a token so can't continue
+    Log "Failed to obtain OAuth token (no error thrown)" Red
+    exit
+}
+
+function GetTokenViaCode
+{
+    # Acquire auth code (needed to request token)
+    $authUrl = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/authorize?client_id=$OAuthClientId&response_type=code&redirect_uri=$OAuthRedirectUri&response_mode=query&prompt=select_account&scope=openid%20profile%20email%20offline_access%20https://outlook.office365.com/.default"
+    Write-Host "Please complete log-in via the web browser, and then copy the redirect URL (including auth code) to the clipboard to continue" -ForegroundColor Green
+    Set-Clipboard -Value "Waiting for auth code"
+    Start-Process $authUrl
+
+    do
+    {
+        $authcode = Get-Clipboard
+        Start-Sleep -Milliseconds 250
+    } while ($authCode -eq "Waiting for auth code")
+
+    $codeStart = $authcode.IndexOf("?code=")
+    if ($codeStart -gt 0)
+    {
+        $authcode = $authcode.Substring($codeStart+6)
+        $codeEnd = $authcode.IndexOf("&session_state=")
+        if ($codeEnd -gt 0)
+        {
+            $authcode = $authcode.Substring(0, $codeEnd)
+        }
+        LogVerbose "Using auth code: $authcode"
+        Write-Host "Auth code acquired, attempting to obtain access token" -ForegroundColor Green
+    }
+    else
+    {
+        throw "Failed to obtain Auth code from clipboard"
+    }
+
+    # Acquire token (using the auth code)
+    $body = @{grant_type="authorization_code";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;code=$authcode;redirect_uri=$OAuthRedirectUri}
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        return
+    }
+    catch {}
+
+    throw "Failed to obtain OAuth token"
+}
+
+function RenewOAuthToken
+{
+    # Renew the delegate token (original token was obtained by auth code, but we can now renew using the access token)
+    if (!$script:oAuthToken)
+    {
+        # We don't have a token, so we can't renew
+        GetTokenViaCode
+        return
+    }
+
+    $body = @{grant_type="refresh_token";scope="https://outlook.office365.com/.default";client_id=$OAuthClientId;refresh_token=$script:oauthToken.refresh_token}
+    try
+    {
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Write-Host "Failed to renew OAuth token (auth code grant)" -ForegroundColor Red
+        exit # Failed to obtain a token
+    }
+}
+
+function GetTokenWithKey
+{
+    $Body = @{
+      "grant_type"    = "client_credentials";
+      "client_id"     = "$OAuthClientId";
+      "scope"         = "https://outlook.office365.com/.default"
+    }
+
+    if ($null -ne $script:oAuthToken)
+    {
+        # If we have a refresh token, add that to our request body and change grant type
+        if (![String]::IsNullOrEmpty($script:oAuthToken.refresh_token))
+        {
+            $Body.Add("refresh_token", $script:oAuthToken.refresh_token)
+            $Body["grant_type"] = "refresh_token"
+        }
+    }
+    if ($Body["grant_type"] -eq "client_credentials")
+    {
+        # To obtain our first access token we need to use the secret key
+        $Body.Add("client_secret", $OAuthSecretKey)
+    }
+
+    try
+    {
+        $script:oAuthToken = Invoke-RestMethod -Method POST -uri "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token" -Body $body
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+    }
+    catch
+    {
+        Log "Failed to obtain OAuth token: $Error" Red
+        exit # Failed to obtain a token
+    }
+    $script:Impersonate = $true
+}
+
+function JWTToPSObject
+{
+    param([Parameter(Mandatory=$true)][string]$token)
+
+    $tokenheader = $token.Split(".")[0].Replace('-', '+').Replace('_', '/')
+    while ($tokenheader.Length % 4) { $tokenheader = "$tokenheader=" }    
+    #$tokenHeaderObject = [System.Text.Encoding]::UTF8.GetString([system.convert]::FromBase64String($tokenheader)) | ConvertFrom-Json
+
+    $tokenPayload = $token.Split(".")[1].Replace('-', '+').Replace('_', '/')
+    while ($tokenPayload.Length % 4) { $tokenPayload = "$tokenPayload=" }
+    $tokenByteArray = [System.Convert]::FromBase64String($tokenPayload)
+    $tokenArray = [System.Text.Encoding]::UTF8.GetString($tokenByteArray)
+    $tokenObject = $tokenArray | ConvertFrom-Json
+    return $tokenObject
+}
+
+function LogOAuthTokenInfo
+{
+    if ($null -eq $global:OAuthAccessToken)
+    {
+        Log "No OAuth token obtained." Red
+        return
+    }
+
+    $idToken = $null
+    if (-not [String]::IsNullOrEmpty($global:OAuthAccessToken.id_token))
+    {
+        $idToken = $global:OAuthAccessToken.id_token
+    }
+    elseif (-not [String]::IsNullOrEmpty($global:OAuthAccessToken.IdToken))
+    {
+        $idToken = $global:OAuthAccessToken.IdToken
+    }
+
+    if ([String]::IsNullOrEmpty($idToken))
+    {
+        Log "OAuth ID token not present" Yellow
+    }
+    else
+    {
+        $global:idTokenDecoded = JWTToPSObject($idToken)
+        Log "OAuth ID Token (`$idTokenDecoded):" Yellow
+        Log $global:idTokenDecoded Yellow
+    }
+
+    if (-not [String]::IsNullOrEmpty($global:OAuthAccessToken))
+    {
+        $global:accessTokenDecoded = JWTToPSObject($global:OAuthAccessToken)
+        Log "OAuth Access Token (`$accessTokenDecoded):" Yellow
+        Log $global:accessTokenDecoded Yellow
+    }
+    else
+    {
+        Log "OAuth access token not present" Red
+    }
 }
 
 function GetOAuthCredentials
@@ -320,93 +569,161 @@ function GetOAuthCredentials
     )
     $exchangeCredentials = $null
 
-    if ( $(LoadADAL) -eq $false )
+    if ($null -ne $script:oauthToken)
     {
-        Log "Failed to load ADAL, which is required for OAuth" Red
-        Exit
+        # We already have a token
+        if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1))
+        {
+            # Token still valid, so return that
+            $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
+            return $exchangeCredentials
+        }
+        # Token needs renewing
     }
 
-    $script:authenticationResult = $null
-    if ([String]::IsNullOrEmpty($OAuthTenantId))
+    if (![String]::IsNullOrEmpty($OAuthSecretKey))
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.windows.net/common", $False)
+        GetTokenWithKey
+    }
+    elseif ($null -ne $OAuthCertificate)
+    {
+        GetTokenWithCertificate
     }
     else
     {
-        $authenticationContext = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.AuthenticationContext("https://login.microsoftonline.com/$OAuthTenantId", $False)
-    }
-    if ($RenewToken)
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::Auto)
-    }
-    else
-    {
-        $platformParameters = New-Object Microsoft.IdentityModel.Clients.ActiveDirectory.PlatformParameters([Microsoft.IdentityModel.Clients.ActiveDirectory.PromptBehavior]::SelectAccount)
-    }
-
-    $redirectUri = New-Object Uri($OAuthRedirectUri)
-    $script:authenticationResult = $authenticationContext.AcquireTokenAsync("https://outlook.office365.com", $OAuthClientId, $redirectUri, $platformParameters)
-
-    if ( !$authenticationResult.IsFaulted )
-    {
-        $script:oAuthToken = $authenticationResult.Result
-        $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthToken.AccessToken)
-        $Mailbox = $authenticationResult.Result.UserInfo.UniqueId
-        LogVerbose "OAuth completed for $($authenticationResult.Result.UserInfo.DisplayableId), access token expires $($script:oAuthToken.ExpiresOn)"
-    }
-    else
-    {
-        ReportError "GetOAuthCredentials"
+        if ($RenewToken)
+        {
+            RenewOAuthToken
+        }
+        else
+        {
+            if ($GlobalTokenStorage -and $null -eq $script:oauthToken)
+            {
+                # Check if we have token variable set globally
+                if ($global:oAuthPersistAppId -eq $OAuthClientId)
+                {
+                    $script:oAuthToken = $global:oAuthPersistToken
+                    $script:oauthTokenAcquireTime = $global:oAuthPersistTokenAcquireTime
+                }
+                RenewOAuthToken
+            }
+            else
+            {
+                GetTokenViaCode
+            }
+        }
     }
 
+    if ($GlobalTokenStorage -or $OAuthDebug)
+    {
+        # Store the OAuth in a global variable for later access
+        $global:oAuthPersistToken = $script:oAuthToken
+        $global:oAuthPersistAppId = $OAuthClientId
+        $global:oAuthPersistTokenAcquireTime = $script:oauthTokenAcquireTime
+    } 
+
+    if ($OAuthDebug)
+    {
+        LogVerbose "`$oAuthPersistToken contains token response"
+        $global:OAuthAccessToken = $script:oAuthAccessToken
+        LogVerbose "`$OAuthAccessToken: `r`n$($global:OAuthAccessToken)"
+        LogOAuthTokenInfo
+    }
+
+   
+
+    # If we get here we have a valid token
+    $exchangeCredentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:oAuthAccessToken)
     return $exchangeCredentials
 }
 
+$script:oAuthDebugStop = $false
+$script:oAuthDebugStopCount = 0
 function ApplyEWSOAuthCredentials
 {
     # Apply EWS OAuth credentials to all our service objects
 
-    if ( $script:authenticationResult -eq $null ) { return }
-    if ( $script:services -eq $null ) { return }
-    if ( $script:services.Count -lt 1 ) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -gt [DateTime]::Now ) { return }
+    if ( -not $OAuth ) { return }
+    if ( $null -eq $script:services ) { return }
+
+    
+    if ($DebugTokenRenewal -gt 0 -and $script:oauthToken)
+    {
+        # When debugging tokens, we stop after on every other EWS call and wait for the token to expire
+        if ($script:oAuthDebugStop)
+        {
+            # Wait until token expires (we do this after every call when debugging OAuth)
+            # Access tokens can't be revoked, but a policy can be assigned to reduce lifetime to 10 minutes: https://learn.microsoft.com/en-us/graph/api/resources/tokenlifetimepolicy?view=graph-rest-1.0
+            if ( $null -ne $OAuthCertificate)
+            {
+                $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+            }
+            else
+            {
+                $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
+            }
+            $timeUntilExpiry = $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            if ($timeUntilExpiry -gt 0)
+            {
+                Write-Host "Waiting until token has expired: $tokenExpire (UTC)" -ForegroundColor Cyan
+                Start-Sleep -Seconds $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
+            }
+            Write-Host "Token expired, continuing..." -ForegroundColor Cyan
+            $oAuthDebugStop = $false
+            $script:oAuthDebugStopCount++
+        }
+        else
+        {
+            if ($DebugTokenRenewal-$script:oAuthDebugStopCount -gt 0)
+            {
+                $script:oAuthDebugStop = $true
+            }
+        }
+    }
+    
+    if ($null -ne $OAuthCertificate)
+    {
+        if ( [DateTime]::UtcNow -lt $script:oauthToken.ExpiresOn.UtcDateTime) { return }
+    }
+    elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
     LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
-    if ($exchangeCredentials -eq $null) { return }
-    if ( $script:authenticationResult.Result.ExpiresOn -le [DateTime]::Now )
-    { 
-        Log "OAuth Token renewal failed"
-        exit # We no longer have access to the mailbox, so we stop here
+    if ($null -eq $exchangeCredentials) { return }
+
+    if ($null -ne $OAuthCertificate)
+    {
+        $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
+        if ( [DateTime]::UtcNow -ge $tokenExpire)
+        {
+            Log "OAuth Token renewal failed (certificate auth)"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+    }
+    else
+    {
+        if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
+        { 
+            Log "OAuth Token renewal failed"
+            exit # We no longer have access to the mailbox, so we stop here
+        }
+        $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
     }
 
-    LogVerbose "OAuth token successfully renewed; new expiry: $($script:oAuthToken.ExpiresOn)"
+    Log "OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
     {
         foreach ($service in $script:services.Values)
         {
-            $service.Credentials = New-Object Microsoft.Exchange.WebServices.Data.OAuthCredentials($script:authenticationResult.Result.AccessToken)
+            $service.Credentials = $exchangeCredentials
         }
-        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService objects"
+        LogVerbose "Updated OAuth token for $($script.services.Count) ExchangeService object(s)"
     }
 }
 
 Function LoadEWSManagedAPI
 {
-    # We try to instantiate a FolderId object to test if we already have the EWS API loaded
-    try
-    {
-        $itemId = $null
-        $itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
-        if ($itemId -ne $null)
-        {
-            return $true
-        }
-    }
-    catch {}
-    $Error.Clear()
-
 	# Find and load the managed API
     $ewsApiLocation = @()
     $ewsApiLoaded = $(LoadLibraries -searchProgramFiles $true -dllNames @("Microsoft.Exchange.WebServices.dll") -dllLocations ([ref]$ewsApiLocation))
@@ -442,6 +759,10 @@ Function LoadEWSManagedAPI
             Write-Host "Failed to read EWS API location: $ewsApiLocation"
             Exit
         }
+        # We can only set any EWS properties once the API is loaded
+
+        $script:PR_REPLICA_LIST = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x6698, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Binary) # PR_REPLICA_LIST is required to perform AutoDiscover requests for public folders
+        $script:PR_FOLDER_TYPE = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3601, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::Integer)
     }
 
     return $ewsApiLoaded
@@ -453,9 +774,10 @@ Function CurrentUserPrimarySmtpAddress()
     $searcher = [adsisearcher]"(samaccountname=$env:USERNAME)"
     $result = $searcher.FindOne()
 
-    if ($result -ne $null)
+    if ($null -ne $result)
     {
         $mail = $result.Properties["mail"]
+        LogDebug "Current user's SMTP address is: $mail"
         return $mail
     }
     return $null
@@ -464,38 +786,38 @@ Function CurrentUserPrimarySmtpAddress()
 Function TrustAllCerts()
 {
     # Implement call-back to override certificate handling (and accept all)
-    $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-    $Compiler=$Provider.CreateCompiler()
-    $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-    $Params.GenerateExecutable=$False
-    $Params.GenerateInMemory=$True
-    $Params.IncludeDebugInformation=$False
-    $Params.ReferencedAssemblies.Add("System.DLL") | Out-Null
 
     $TASource=@'
         namespace Local.ToolkitExtensions.Net.CertificatePolicy {
-        public class TrustAll : System.Net.ICertificatePolicy {
-            public TrustAll()
-            {
+            public class TrustAll : System.Net.ICertificatePolicy {
+                public TrustAll()
+                {
+                }
+                public bool CheckValidationResult(System.Net.ServicePoint sp,
+                                                    System.Security.Cryptography.X509Certificates.X509Certificate cert, 
+                                                    System.Net.WebRequest req, int problem)
+                {
+                    return true;
+                }
             }
-            public bool CheckValidationResult(System.Net.ServicePoint sp,
-                                                System.Security.Cryptography.X509Certificates.X509Certificate cert, 
-                                                System.Net.WebRequest req, int problem)
-            {
-                return true;
-            }
-        }
         }
 '@ 
-    $TAResults=$Provider.CompileAssemblyFromSource($Params,$TASource)
-    $TAAssembly=$TAResults.CompiledAssembly
+
+    Add-Type -TypeDefinition $TASource -ReferencedAssemblies "System.DLL"
 
     ## We now create an instance of the TrustAll and attach it to the ServicePointManager
-    $TrustAll=$TAAssembly.CreateInstance("Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll")
+    $TrustAll=[Local.ToolkitExtensions.Net.CertificatePolicy.TrustAll]::new()
     [System.Net.ServicePointManager]::CertificatePolicy=$TrustAll
 }
 
-Function CreateTraceListener($service)
+Function SetClientRequestId($exchangeService)
+{
+    # Apply unique client-request-id to the EWS service object
+
+    $exchangeService.ClientRequestId = (New-Guid).ToString()
+}
+
+Function CreateTraceListener($exchangeService)
 {
     # Create trace listener to capture EWS conversation (useful for debugging)
 
@@ -505,110 +827,93 @@ Function CreateTraceListener($service)
         Exit
     }
 
-    if ($script:Tracer -eq $null)
+    if ($null -eq $script:Tracer)
     {
-        $Provider=New-Object Microsoft.CSharp.CSharpCodeProvider
-        $Params=New-Object System.CodeDom.Compiler.CompilerParameters
-        $Params.GenerateExecutable=$False
-        $Params.GenerateInMemory=$True
-        $Params.IncludeDebugInformation=$False
-	    $Params.ReferencedAssemblies.Add("System.dll") | Out-Null
-        $Params.ReferencedAssemblies.Add($EWSManagedApiPath) | Out-Null
-
-        $traceFileForCode = $traceFile.Replace("\", "\\")
-
-        if (![String]::IsNullOrEmpty($TraceFile))
-        {
-            Log "Tracing to: $TraceFile"
-        }
-
         $TraceListenerClass = @"
-		    using System;
-		    using System.Text;
-		    using System.IO;
-		    using System.Threading;
-		    using Microsoft.Exchange.WebServices.Data;
-		
-            namespace TraceListener {
-		        class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
-		        {
-			        private StreamWriter _traceStream = null;
-                    private string _lastResponse = String.Empty;
+            using System;
+            using System.IO;
+            using Microsoft.Exchange.WebServices.Data;
 
-			        public EWSTracer()
-			        {
-				        try
-				        {
-					        _traceStream = File.AppendText("$traceFileForCode");
-				        }
-				        catch { }
-			        }
+            public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+            {
+                private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
+                private string _traceFileFullPath = "No trace file configured";
 
-			        ~EWSTracer()
-			        {
-                        Close();
-			        }
-
-                    public void Close()
-			        {
-				        try
-				        {
-					        _traceStream.Flush();
-					        _traceStream.Close();
-				        }
-				        catch { }
-			        }
-
-
-			        public void Trace(string traceType, string traceMessage)
-			        {
-                        if ( traceType.Equals("EwsResponse") )
-                            _lastResponse = traceMessage;
-
-                        if ( traceType.Equals("EwsRequest") )
-                            _lastResponse = String.Empty;
-
-				        if (_traceStream == null)
-					        return;
-
-				        lock (this)
-				        {
-					        try
-					        {
-						        _traceStream.WriteLine(traceMessage);
-						        _traceStream.Flush();
-					        }
-					        catch { }
-				        }
-			        }
-
-                    public string LastResponse
+                public EWSTracer(string traceFileName = "" )
+                {
+                    if (!String.IsNullOrEmpty(traceFileName))
                     {
-                        get { return _lastResponse; }
+                        try
+                        {
+                            _traceStream = File.AppendText(traceFileName);
+                            FileInfo fi = new FileInfo(traceFileName);
+                            _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
+                        }
+                        catch { }
                     }
-		        }
+                }
+
+                public void Close()
+                {
+                    try
+                    {
+                        _traceStream.Flush();
+                        _traceStream.Close();
+                    }
+                    catch { }
+                }
+
+                public void Trace(string traceType, string traceMessage)
+                {
+                    if ( traceType.Equals("EwsResponse") )
+                        _lastResponse = traceMessage;
+                    else if ( traceType.Equals("EwsRequest") )
+                        _lastResponse = String.Empty;
+
+                    if (_traceStream == null)
+                        return;
+
+                    try
+                    {
+                        _traceStream.WriteLine(traceMessage);
+                        _traceStream.Flush();
+                    }
+                    catch { }
+                }
+
+                public string LastResponse
+                {
+                    get { return _lastResponse; }
+                }
+
+                public string TraceFileFullPath
+                {
+                    get { return _traceFileFullPath; }
+                }
             }
 "@
 
-        $TraceCompilation=$Provider.CompileAssemblyFromSource($Params,$TraceListenerClass)
-        $TraceAssembly=$TraceCompilation.CompiledAssembly
-        $script:Tracer=$TraceAssembly.CreateInstance("TraceListener.EWSTracer")
-    }
+        if ("EWSTracer" -as [type]) {} else {
+            Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
+        }
+        $script:Tracer=[EWSTracer]::new($TraceFile)
 
-    # Attach the trace listener to the Exchange service
-    $service.TraceListener = $script:Tracer
+        # Attach the trace listener to the Exchange service
+        $exchangeService.TraceListener = $script:Tracer
+        if (![String]::IsNullOrEmpty($TraceFile))
+        {
+            Log "Tracing to: $($script:Tracer.TraceFileFullPath)"
+        }
+    }
 }
 
-function CreateService()
+function CreateService($smtpAddress, $impersonatedAddress = "")
 {
-    param (
-        [String]$smtpAddress,
-        [Switch]$ForceImpersonation
-    )
     # Creates and returns an ExchangeService object to be used to access mailboxes
 
     # First of all check to see if we have a service object for this mailbox already
-    if ($script:services -eq $null)
+    if ($null -eq $script:services)
     {
         $script:services = @{}
     }
@@ -618,20 +923,15 @@ function CreateService()
     }
 
     # Create new service
-    if ($Exchange2007)
-    {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2007_SP1)
-    }
-    else
-    {
-        $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2010_SP2)
-    }
+    $exchangeService = New-Object Microsoft.Exchange.WebServices.Data.ExchangeService([Microsoft.Exchange.WebServices.Data.ExchangeVersion]::Exchange2016)
+    $exchangeService.UserAgent = $UserAgent
 
     # Do we need to use OAuth?
+    if ($Office365) { $OAuth = $true }
     if ($OAuth)
     {
         $exchangeService.Credentials = GetOAuthCredentials
-        if ($exchangeService.Credentials -eq $null)
+        if ($null -eq $exchangeService.Credentials)
         {
             # OAuth failed
             return $null
@@ -640,7 +940,7 @@ function CreateService()
     else
     {
         # Set credentials if specified, or use logged on user.
-        if ($Credentials -ne $Null)
+        if ($null -ne $Credentials)
         {
             LogVerbose "Applying given credentials: $($Credentials.UserName)"
             $exchangeService.Credentials = $Credentials.GetNetworkCredential()
@@ -651,8 +951,6 @@ function CreateService()
             $exchangeService.UseDefaultCredentials = $true
         }
     }
-
-
 
     # Set EWS URL if specified, or use autodiscover if no URL specified.
     if ($EwsUrl -or $Office365)
@@ -687,30 +985,221 @@ function CreateService()
     	}
     }
  
-    $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
-    if ($Impersonate -or $ForceImpersonation)
+    if ([String]::IsNullOrEmpty($impersonatedAddress))
     {
-		$exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $smtpAddress)
-	}
+        $impersonatedAddress = $smtpAddress
+    }
+    $exchangeService.HttpHeaders.Add("X-AnchorMailbox", $smtpAddress)
+    if ($Impersonate)
+    {
+        $exchangeService.ImpersonatedUserId = New-Object Microsoft.Exchange.WebServices.Data.ImpersonatedUserId([Microsoft.Exchange.WebServices.Data.ConnectingIdType]::SmtpAddress, $impersonatedAddress)
+    }
 
     # We enable tracing so that we can retrieve the last response (and read any throttling information from it - this isn't exposed in the EWS Managed API)
     if (![String]::IsNullOrEmpty($EWSManagedApiPath))
     {
         CreateTraceListener $exchangeService
-        $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
-        $exchangeService.TraceEnabled = $True
+        if ($script:Tracer)
+        {
+            $exchangeService.TraceListener = $script:Tracer
+            $exchangeService.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+            $exchangeService.TraceEnabled = $True
+        }
+        else
+        {
+            Log "Failed to create EWS trace listener.  Throttling back-off time won't be detected." Yellow
+        }
     }
+
+    SetClientRequestId $exchangeService
+    $exchangeService.ReturnClientRequestId = $true
 
     $script:services.Add($smtpAddress, $exchangeService)
     LogVerbose "Currently caching $($script:services.Count) ExchangeService objects" $true
     return $exchangeService
 }
 
+Function CreateAutoDiscoverService($exchangeService)
+{
+    $autodiscover = new-object Microsoft.Exchange.WebServices.Autodiscover.AutodiscoverService(new-object Uri("https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc"), ExchangeVersion.Exchange2016)
+    $autodiscover.Credentials = $exchangeService.Credentials
+    $autodiscover.TraceListener = $exchangeService.TraceListener
+    $autodiscover.TraceFlags = [Microsoft.Exchange.WebServices.Data.TraceFlags]::All
+    $autodiscover.TraceEnabled = $true
+    $autodiscover.UserAgent = $UserAgent
+    return $autodiscover;
+}
+
+function SetArchiveMailboxHeaders($ExchangeService, $PrimarySmtpAddress)
+{
+    
+}
+
+function SetPublicFolderHeirarchyHeaders($ExchangeService, $AutodiscoverAddress)
+{
+    # Sets the X-PublicFolderMailbox and X-AnchorMailbox properties for a request to public folders
+
+    if (!$OAuth -and !$Office365)
+    {
+        LogDebug "Public folder headers not implemented for on-premises Exchange"
+        return $null        
+    }
+
+    if ($null -eq $script:publicFolderHeirarchyHeaders)
+    {
+        # We keep a cache of known folders to avoid unnecessary AutoDiscover
+        $script:publicFolderHeirarchyHeaders = New-Object 'System.Collections.Generic.Dictionary[String,String[]]'
+    }
+
+    $xAnchorMailbox = ""
+    $xPublicFolderMailbox = ""
+    if ($script:publicFolderHeirarchyHeaders.ContainsKey($AutodiscoverAddress))
+    {
+        $xAnchorMailbox = $script:publicFolderHeirarchyHeaders[$AutodiscoverAddress][0]
+        $xPublicFolderMailbox = $script:publicFolderHeirarchyHeaders[$AutodiscoverAddress][1]
+    }    
+    else {
+        $autoDiscoverService = CreateAutoDiscoverService $ExchangeService
+        [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName[]]$userSettingsRequired = @([Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::PublicFolderInformation, [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::InternalRpcClientServer)
+        $userSettings = $autoDiscoverService.GetUserSettings($AutodiscoverAddress, $userSettingsRequired)
+    
+        if ($null -eq $userSettings)
+        {
+            LogVerbose "Failed to obtain Autodiscover public folder settings"
+            return
+        }
+    
+        $xAnchorMailbox = $userSettings.Settings[[Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::PublicFolderInformation]
+        if ([String]::IsNullOrEmpty($xAnchorMailbox))
+        {
+            LogVerbose "PublicFolderInformation not present in Autodiscover response"
+            return
+        }
+        LogVerbose "Public folder heirarchy X-AnchorMailbox set to $xAnchorMailbox"
+    
+        # Now we need to retrieve the X-PublicFolderMailbox value
+        $userSettings = $autoDiscoverService.GetUserSettings($xAnchorMailbox, [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::InternalRpcClientServer)
+        $xPublicFolderMailbox = $userSettings.Settings[[Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::InternalRpcClientServer]
+        if ([String]::IsNullOrEmpty($xPublicFolderMailbox))
+        {
+            LogVerbose "PublicFolderInformation not present in Autodiscover response fpr $xAnchorMailbox"
+            return
+        }
+        LogVerbose "Public folder heirarchy X-PublicFolderMailbox set to $xPublicFolderMailbox"
+
+        $script:publicFolderHeirarchyHeaders.Add($AutodiscoverAddress, @($xAnchorMailbox, $xPublicFolderMailbox))
+    }
+
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-PublicFolderMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-PublicFolderMailbox") | out-null
+    }
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-AnchorMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-AnchorMailbox") | out-null
+    }
+    $ExchangeService.HttpHeaders.Add("X-PublicFolderMailbox", $xPublicFolderMailbox) | out-null
+    $ExchangeService.HttpHeaders.Add("X-AnchorMailbox", $xAnchorMailbox) | out-null
+}
+
+Function SetPublicFolderContentHeaders($ExchangeService, $PublicFolder)
+{
+    # Sets the X-PublicFolderMailbox and X-AnchorMailbox properties for a content request to public folders
+
+    if (!$OAuth -and !$Office365)
+    {
+        LogDebug "Public folder headers not implemented for on-premises Exchange"
+        return $null        
+    }
+
+    if ($null -eq $script:publicFolderContentHeaders)
+    {
+        # We keep a cache of known folders to avoid unnecessary AutoDiscover
+        $script:publicFolderContentHeaders = New-Object 'System.Collections.Generic.Dictionary[String,String]'
+    }
+
+    $xPublicFolderMailbox = ""
+    if ($script:publicFolderContentHeaders.ContainsKey($PublicFolder.FolderId.UniqueId))
+    {
+        $xPublicFolderMailbox = $script:publicFolderContentHeaders[$PublicFolder.FolderId.UniqueId]
+    }
+    else
+    {
+        # We need to perform an AutoDiscover request to obtain the correct header value        
+        $replicaGuid = ""
+        foreach ($extendedProperty in $PublicFolder.ExtendedProperties)
+        {
+            if ($extendedProperty.PropertyDefinition -eq $script:PR_REPLICA_LIST)
+            {
+                $replicaGuid =[System.Text.Encoding]::ASCII.GetString($extendedProperty.Value, 0, 36)
+                break
+            }
+        }
+        if ([String]::IsNullOrEmpty($replicaGuid))
+        {
+            LogVerbose "Public folder PR_REPLICA_LIST not present"
+            return
+        }
+
+        # Work out the AutoDiscover address from the replica GUID and domain
+        if ($null -eq $Mailbox -and $null -ne $SourceMailbox)
+        {
+            $Mailbox = $SourceMailbox
+        }
+        $domainStart = $Mailbox.IndexOf("@")
+        if ($domainStart -lt 0)
+        {
+            Log "Invalid mailbox: $Mailbox" Red
+            return
+        }
+        $autoDiscoverAddress = "$replicaGuid$($Mailbox.Substring($domainStart))"
+        LogVerbose "AutoDiscover address for $autoDiscoverAddress to access public folder $($PublicFolder.DisplayName)"
+        
+        $autoDiscoverService = CreateAutoDiscoverService $ExchangeService
+        if ($null -eq $autoDiscoverService)
+        {
+            LogVerbose "Failed to create AutoDiscover service"
+            return
+        }
+
+        [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName[]]$userSettingsRequired = @([Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::PublicFolderInformation, [Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::AutoDiscoverSMTPAddress)
+        $userSettings = $autoDiscoverService.GetUserSettings($autodiscoverAddress, $userSettingsRequired)
+
+        if ($null -eq $userSettings)
+        {
+            LogVerbose "Failed to obtain user settings for $autoDiscoverAddress"
+            return
+        }
+
+        $xPublicFolderMailbox = $userSettings.Settings[[Microsoft.Exchange.WebServices.Autodiscover.UserSettingName]::AutoDiscoverSMTPAddress]
+        if ([String]::IsNullOrEmpty($xPublicFolderMailbox))
+        {
+            LogVerbose "Failed to obtain AutoDiscoverSMTPAddress for $autoDiscoverAddress"
+            return
+        }
+
+        $script:publicFolderContentHeaders.Add($PublicFolder.FolderId.UniqueId, $xPublicFolderMailbox)
+        LogVerbose "Caching X-PublicFolderMailbox for folder $($PublicFolder.DisplayName): $xPublicFolderMailbox"
+    }
+
+    # Both X-PublicFolderMailbox and X-AnchorMailbox are required for public folder content requests, but they have the same value
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-PublicFolderMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-PublicFolderMailbox") | out-null
+    }
+    if ($ExchangeService.HttpHeaders.ContainsKey("X-AnchorMailbox"))
+    {
+        $ExchangeService.HttpHeaders.Remove("X-AnchorMailbox") | out-null
+    }
+    $ExchangeService.HttpHeaders.Add("X-PublicFolderMailbox", $xPublicFolderMailbox) | out-null
+    $ExchangeService.HttpHeaders.Add("X-AnchorMailbox", $xPublicFolderMailbox) | out-null
+    LogVerbose "Set X-PublicFolderMailbox and X-AnchorMailbox to $xPublicFolderMailbox"
+}
+
 Function Throttled()
 {
     # Checks if we've been throttled.  If we have, we wait for the specified number of BackOffMilliSeconds before returning
-
-    if ([String]::IsNullOrEmpty($script:Tracer.LastResponse))
+    if ( $null -eq $script:Tracer -or [String]::IsNullOrEmpty($script:Tracer.LastResponse))
     {
         return $false # Throttling does return a response, if we don't have one, then throttling probably isn't the issue (though sometimes throttling just results in a timeout)
     }
@@ -722,33 +1211,13 @@ Function Throttled()
     if ($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value.Name -eq "BackOffMilliseconds")
     {
         # We are throttled, and the server has told us how long to back off for
-
-        # Increase our throttling delay to try and avoid throttling (we only increase to a maximum delay of 15 seconds between requests)
-        if ( $script:throttlingDelay -lt 15000)
-        {
-            if ($script:throttlingDelay -lt 1)
-            {
-                $script:throttlingDelay = 2000
-            }
-            else
-            {
-                $script:throttlingDelay = $script:throttlingDelay * 2
-            }
-            if ( $script:throttlingDelay -gt 15000)
-            {
-                $script:throttlingDelay = 15000
-            }
-        }
-        LogVerbose "Updated throttling delay to $($script:throttlingDelay)ms"
-
-        # Now back off for the time given by the server
-        Log "Throttling detected, server requested back off for $($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text") milliseconds" Yellow
-        Sleep -Milliseconds $responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text"
-        Log "Throttling budget should now be reset, resuming operations" Gray
+        $backOffMilliseconds = [int]::Parse($responseXml.Trace.Envelope.Body.Fault.detail.MessageXml.Value."#text")
+        $resumeTime = [DateTime]::Now.AddMilliseconds($backOffMilliseconds)
+        Log "Back off for $backOffMilliseconds milliseconds (will resume at $($resumeTime.ToLongTimeString()))" Yellow
+        Start-Sleep -Milliseconds $backOffMilliseconds
+        Log "Resuming operations" Gray
         return $true
     }
-
-    Log "Last server response: $($script:Tracer.LastResponse)" Red
     return $false
 }
 
@@ -759,29 +1228,46 @@ function ThrottledFolderBind()
         $propset = $null,
         $exchangeService = $null)
 
+    if ($null -eq $folderId)
+    {
+        Log "FolderId missing" Red
+        return $null
+    }
+
     LogVerbose "Attempting to bind to folder $folderId"
     $folder = $null
-    if ($exchangeService -eq $null)
+    if ($null -eq $exchangeService)
     {
-        LogVerbose "No exchange service passed to ThrottledFolderBind, so using default"
         $exchangeService = $script:service
+        if ($null -eq $exchangeService)
+        {
+            Log "No ExchangeService object set" Red
+            return $null
+        }
+    }
+
+    if ($null -eq $script:requiredFolderProperties)
+    {
+        # If scripts require a custom property set, this variable should be set before calling this function.  If it's missing at this point, we just retrieve the most useful folder properties
+        $script:requiredFolderProperties = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.FolderSchema]::DisplayName,
+            [Microsoft.Exchange.WebServices.Data.FolderSchema]::FolderClass, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ParentFolderId, [Microsoft.Exchange.WebServices.Data.FolderSchema]::ChildFolderCount,
+            [Microsoft.Exchange.WebServices.Data.FolderSchema]::TotalCount, $script:PR_FOLDER_TYPE)
+        $script:requiredFolderProperties.Add($script:PR_REPLICA_LIST) # Required for public folder Autodiscover
+    }    
+    if ($null -eq $propset)
+    {
+        $propset = $script:requiredFolderProperties
     }
 
     try
     {
-        if ($propset -eq $null)
-        {
-            $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId)
-        }
-        else
-        {
-            $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
-        }
-        if (!($folder -eq $null))
+        ApplyEWSOauthCredentials
+        SetClientRequestId $exchangeService
+        $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
+        if (!($null -eq $folder))
         {
             LogVerbose "Successfully bound to folder $folderId"
         }
-        Sleep -Milliseconds $script:currentThrottlingDelay
         return $folder
     }
     catch {}
@@ -790,15 +1276,10 @@ function ThrottledFolderBind()
     {
         try
         {
-            if ($propset -eq $null)
-            {
-                $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId)
-            }
-            else
-            {
-                $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
-            }
-            if (!($folder -eq $null))
+            ApplyEWSOauthCredentials
+            SetClientRequestId $exchangeService
+            $folder = [Microsoft.Exchange.WebServices.Data.Folder]::Bind($exchangeService, $folderId, $propset)
+            if (!($null -eq $folder))
             {
                 LogVerbose "Successfully bound to folder $folderId"
             }
@@ -808,9 +1289,12 @@ function ThrottledFolderBind()
     }
 
     # If we get to this point, we have been unable to bind to the folder
+    ReportError "ThrottledFolderBind"
     LogVerbose "FAILED to bind to folder $folderId"
     return $null
 }
+
+#>** EWS/OAUTH FUNCTIONS END **#
 
 Function GetFolder()
 {
@@ -821,20 +1305,20 @@ Function GetFolder()
         [switch]$Create
     )
         	
-    if ( $RootFolder -eq $null )
+    if ( $null -eq $RootFolder )
     {
         # If we don't have a root folder, we assume the root of the message store
-        if ($script:msgFolderRoot -eq $null)
+        if ( $null -eq $script:msgFolderRoot)
         {
-            LogVerbose "[GetFolder] Attempting to locate root message folder"
+            LogVerbose "Attempting to locate root message folder"
             $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::MsgFolderRoot, $Mailbox )
             $script:msgFolderRoot = ThrottledFolderBind $folderId $null $script:service
-            if ($script:msgFolderRoot -eq $null)
+            if ($null -eq $script:msgFolderRoot)
             {
-                Log "[GetFolder] Failed to bind to message root folder" Red
+                Log "Failed to bind to message root folder" Red
                 return $null
             }
-            LogVerbose "[GetFolder] Retrieved root message folder"
+            LogVerbose "Retrieved root message folder"
         }
         $RootFolder = $script:msgFolderRoot
     }
@@ -847,7 +1331,7 @@ Function GetFolder()
 		{
 			if ($PathElements[$i])
 			{
-                LogDebug "[GetFolder] Finding folder $($PathElements[$i])"
+                LogDebug "Finding folder $($PathElements[$i])"
 				$View = New-Object  Microsoft.Exchange.WebServices.Data.FolderView(2,0)
 				$View.PropertySet = [Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly
 						
@@ -857,10 +1341,10 @@ Function GetFolder()
                 try
                 {
 				    $FolderResults = $Folder.FindFolders($SearchFilter, $View)
-                    Sleep -Milliseconds $script:throttlingDelay
+                    Start-Sleep -Milliseconds $script:throttlingDelay
                 }
                 catch {}
-                if ($FolderResults -eq $Null)
+                if ($null -eq $FolderResults)
                 {
                     if (Throttled)
                     {
@@ -871,7 +1355,7 @@ Function GetFolder()
                     catch {}
                     }
                 }
-                if ($FolderResults -eq $null)
+                if ( $null -eq $FolderResults)
                 {
                     return $null
                 }
@@ -880,7 +1364,7 @@ Function GetFolder()
 				{
 					# We have more than one folder returned... We shouldn't ever get this, as it means we have duplicate folders
 					$Folder = $null
-					Log "[GetFolder] Duplicate folders ($($PathElements[$i])) found in path $FolderPath" -ForegroundColor Red
+					Log "Duplicate folders ($($PathElements[$i])) found in path $FolderPath" -ForegroundColor Red
 					break
 				}
                 elseif ( $FolderResults.TotalCount -eq 0 )
@@ -893,13 +1377,13 @@ Function GetFolder()
                         try
                         {
 					        $subfolder.Save($Folder.Id)
-                            LogVerbose "[GetFolder] Created folder $($PathElements[$i])"
+                            LogVerbose "Created folder $($PathElements[$i])"
                         }
                         catch
                         {
 					        # Failed to create the subfolder
 					        $Folder = $null
-					        Log "[GetFolder] Failed to create folder $($PathElements[$i]) in path $FolderPath" Red
+					        Log "Failed to create folder $($PathElements[$i]) in path $FolderPath" Red
 					        break
                         }
                         $Folder = $subfolder
@@ -908,7 +1392,7 @@ Function GetFolder()
                     {
 					    # Folder doesn't exist
 					    $Folder = $null
-					    Log "[GetFolder] Folder $($PathElements[$i]) doesn't exist in path $FolderPath" Red
+					    Log "Folder $($PathElements[$i]) doesn't exist in path $FolderPath" Red
 					    break
                     }
                 }
@@ -1081,7 +1565,7 @@ function FindAndResendMessage()
 
     LogVerbose "Getting ExchangeService for $senderEmail"
     $senderService = CreateService $senderEmail
-    if ($senderService -eq $null)
+    if ($null -eq $senderService)
     {
         Log "Failed to open mailbox of sender: $senderEmail" Red
         $script:errorItems++
@@ -1092,7 +1576,7 @@ function FindAndResendMessage()
     $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::SentItems, $mbx )
     LogVerbose "Connecting to Sent Items folder of $senderEmail"
     $folder = ThrottledFolderBind $folderId $null $senderService
-    if ($folder -eq $null)
+    if ($null -eq $folder)
     {
         Log "Failed to connect to SentItems folder of $senderEmail" Red
         $script:errorItems++
@@ -1108,7 +1592,7 @@ function FindAndResendMessage()
     try
     {
         $FindResults = $folder.FindItems($SearchFilter, $View)
-        Sleep -Milliseconds $script:currentThrottlingDelay
+        Start-Sleep -Milliseconds $script:currentThrottlingDelay
     }
     catch
     {
@@ -1164,12 +1648,12 @@ function ExtractHeaderValue()
     }
     $headerLines = $headers -split "`r`n|`r|`n"
 
-    LogVerbose "[ExtractHeaderValue] Analysing header block (contains $($headerLines.Count) lines)"
+    LogVerbose "Analysing header block (contains $($headerLines.Count) lines)"
     $i=0
     do {
+        #LogVerbose "$($headerLines[$i])"
         if ( $headerLines[$i].StartsWith("$($headerName): ", [System.StringComparison]::OrdinalIgnoreCase) )
         {
-            #LogVerbose "$($headerLines[$i])"
             # This is the header we want
             $foundHeader = ""
             do {
@@ -1184,7 +1668,7 @@ function ExtractHeaderValue()
                 $i++
             } while ( ($i -lt $headerLines.Count) -and ($headerLines[$i+1].StartsWith("`t") -or $headerLines[$i+1].StartsWith(" ")) )
             $foundHeader = $foundHeader.Substring($headerName.Length+2)
-            LogVerbose "[ExtractHeaderValue] Found header: $headerName"
+            LogVerbose "Found header: $headerName"
             return $foundHeader
         }
         $i++
@@ -1215,7 +1699,7 @@ function ReplaceMIMEHeader()
     $updatedHeaders = New-Object System.Text.StringBuilder
     $headerFound = $false
 
-    LogVerbose "[ReplaceMIMEHeader] Analysing header block"
+    LogVerbose "Analysing header block"
     $i=0
     do {
         if ($headerLines[$i].StartsWith("$($HeaderName): ") )
@@ -1225,11 +1709,11 @@ function ReplaceMIMEHeader()
             if (![String]::IsNullOrEmpty($HeaderValue))
             {
                 $updatedHeaders.AppendLine("$($HeaderName): $HeaderValue") | out-null
-                LogVerbose "[ReplaceMIMEHeader] Found $HeaderName header, replaced: $($HeaderName): $HeaderValue"
+                LogVerbose "Found $HeaderName header, replaced: $($HeaderName): $HeaderValue"
             }
             else
             {
-                LogVerbose "[ReplaceMIMEHeader] Removed $HeaderName header"
+                LogVerbose "Removed $HeaderName header"
             }
             do {
                 $i++
@@ -1250,10 +1734,10 @@ function ReplaceMIMEHeader()
         if (![String]::IsNullOrEmpty($HeaderValue))
         {
             $updatedHeaders.AppendLine("$($HeaderName): $HeaderValue") | out-null
-            LogVerbose "[ReplaceMIMEHeader] Added header: $($HeaderName): $HeaderValue"
+            LogVerbose "Added header: $($HeaderName): $HeaderValue"
         }
     }
-    LogVerbose "[ReplaceMIMEHeader] Header block analysis complete; $i lines processed"
+    LogVerbose "Header block analysis complete; $i lines processed"
 
     # Now we just need to put the new header and the content back together
     return "$($updatedHeaders.ToString())$content"
@@ -1294,7 +1778,7 @@ function StripEncryptedAttachmentsFromMime([String]$mime)
     {
         $line = $reader.ReadLine()
 
-        if ($line -ne $null)
+        if ($null -ne $line)
         {
             if ( [String]::IsNullOrEmpty($boundary) )
             {
@@ -1307,7 +1791,7 @@ function StripEncryptedAttachmentsFromMime([String]$mime)
                     if ($line -match "boundary=`"(.*?)\`"")
                     {
                         $boundary = $Matches[1]
-                        LogVerbose "[StripEncryptedAttachmentsFromMime] Found MIME boundary: $boundary"
+                        LogVerbose "Found MIME boundary: $boundary"
                     }
                 }
                 [void]$updatedMIME.AppendLine($line)
@@ -1325,7 +1809,7 @@ function StripEncryptedAttachmentsFromMime([String]$mime)
                 [void]$unwrittenData.AppendLine($line)
                 if ($line.Equals("--$boundary"))
                 {
-                    LogVerbose "[StripEncryptedAttachmentsFromMime] Found MIME boundary"
+                    LogVerbose "Found MIME boundary"
                     if (!$startBoundaryFound)
                     {
                         $startBoundaryFound = $true
@@ -1337,14 +1821,14 @@ function StripEncryptedAttachmentsFromMime([String]$mime)
                         if ($encryptedAttachmentFoundInMIMEPart)
                         {
                             # Remove this MIME part, as it contains an encrypted attachment
-                            LogVerbose "[StripEncryptedAttachmentsFromMime] Encrypted MIME part (length $($unwrittenData.Length)) removed"
+                            LogVerbose "Encrypted MIME part (length $($unwrittenData.Length)) removed"
                             $unwrittenData = [System.Text.StringBuilder]::new()
                             $encryptedAttachmentFoundInMIMEPart = $false
                         }
                         else
                         {
                             # Keep this MIME part
-                            LogVerbose "[StripEncryptedAttachmentsFromMime] MIME part contained no encrypted data"
+                            LogVerbose "MIME part contained no encrypted data"
                             [void]$updatedMIME.Append($unwrittenData.ToString())
                             $unwrittenData = [System.Text.StringBuilder]::new()
                         }
@@ -1352,20 +1836,20 @@ function StripEncryptedAttachmentsFromMime([String]$mime)
                 }
                 if ($line.StartsWith("Content-Type: application/x-microsoft-rpmsg-message"))
                 {
-                    LogVerbose "[StripEncryptedAttachmentsFromMime] Encrypted MIME part found: $line"
+                    LogVerbose "Encrypted MIME part found: $line"
                     $encryptedAttachmentFoundInMIMEPart = $true
                 }
             }
         }
 
-    } while ($line -ne $null)
+    } while ($null -ne $line)
 
     if ($unwrittenData.Length -gt 0)
     {
         # We still have some data that we need to deal with
         if ($encryptedAttachmentFoundInMIMEPart)
         {
-            LogVerbose "[StripEncryptedAttachmentsFromMime] Encrypted MIME part (length $($unwrittenData.Length)) removed"
+            LogVerbose "Encrypted MIME part (length $($unwrittenData.Length)) removed"
             [void]$updatedMIME.AppendLine("--$boundary--") # We need to add back the closing MIME boundary
         }
         else
@@ -1378,19 +1862,19 @@ function StripEncryptedAttachmentsFromMime([String]$mime)
 
 function ValidateFolderMoveParameter($TargetFolder, $folderObject)
 {
-    if ( ($folderObject -ne $null) -or [String]::IsNullOrEmpty(($TargetFolder)) )
+    if ( ($null -ne $folderObject) -or [String]::IsNullOrEmpty(($TargetFolder)) )
     {
         return $folderObject
     }
 
-    LogVerbose "[ValidateFolderMoveParameter] Locating folder: $TargetFolder"
+    LogVerbose "Locating folder: $TargetFolder"
     $folderObject = GetFolder $null $TargetFolder -Create
-    if ($folderObject -eq $null)
+    if ($null -eq $folderObject)
     {
-        Log "[ValidateFolderMoveParameter] Unable to find/create target folder specified in parameters" Red
+        Log "Unable to find/create target folder specified in parameters" Red
         exit
     }
-    Log "[ValidateFolderMoveParameter] Folder located: $TargetFolder"
+    Log "Folder located: $TargetFolder"
     return $folderObject
 }
 
@@ -1420,20 +1904,20 @@ function ResendMessages()
                 Out-File -FilePath $IgnoreIdsLog
                 if ( -not $(Test-Path $IgnoreIdsLog -PathType Leaf) )
                 {
-                    ReportError "[ResendMessages]"
-                    Log "[ResendMessages] Failed to create ignore file:  $IgnoreIdsLog" Red
+                    ReportError
+                    Log "Failed to create ignore file:  $IgnoreIdsLog" Red
                     exit
                 }
                 else
                 {
-                    Log "[ResendMessages] No existing items to ignore, created ignore file:  $IgnoreIdsLog" Green
+                    Log "No existing items to ignore, created ignore file:  $IgnoreIdsLog" Green
                 }
             }
         }
     }
 
     $progressActivity = "Processing NDRs"
-    LogVerbose "[ResendMessages] Processing $($NDRs.Count) items"
+    LogVerbose "Processing $($NDRs.Count) items"
     $ndrNum = 1
     foreach ($NDR in $NDRs)
     {
@@ -1449,7 +1933,7 @@ function ResendMessages()
         if ($script:ignoreIds.Contains($NDR.Id.UniqueId))
         {
             # We have already processed this item, but were unable to move it
-            LogVerbose "[ResendMessages] Ignoring item: $($NDR.Id.UniqueId)"
+            LogVerbose "Ignoring item: $($NDR.Id.UniqueId)"
             $script:ignoredItems++
             continue
         }
@@ -1457,7 +1941,7 @@ function ResendMessages()
         # Load the message body (we only need the text version)
         $propset = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly, [Microsoft.Exchange.WebServices.Data.ItemSchema]::Body,
             [Microsoft.Exchange.WebServices.Data.ItemSchema]::Attachments, [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::ToRecipients, [Microsoft.Exchange.WebServices.Data.ItemSchema]::ParentFolderId, $PidTagBody)
-        Log "[ResendMessages] Retrieving message Id: $($NDR.Id.UniqueId)" Gray
+        Log "Retrieving message Id: $($NDR.Id.UniqueId)" Gray
         $NDR.Load($propset)
 
         # An NDR should have the failed recipients as the recipients, so we read these
@@ -1471,14 +1955,14 @@ function ResendMessages()
             {
                 if (![String]::IsNullOrEmpty($resendToAddress))
                 {
-                    LogVerbose "[ResendMessages] Resending to $($resendToAddress) based on OnlyResendTo parameter"
+                    LogVerbose "Resending to $($resendToAddress) based on OnlyResendTo parameter"
                     $resendTo += $resendToAddress
                 }
             }
             if ( $resendTo.Count -lt 1 )
             {
                 # Parsing the OnlyResendTo recipients didn't return any recipients...
-                Log "[ResendMessages] OnlyResendTo parameter invalid: $OnlyResendTo" Red
+                Log "OnlyResendTo parameter invalid: $OnlyResendTo" Red
                 exit
             }
         }
@@ -1489,17 +1973,17 @@ function ResendMessages()
             {
                 foreach ($recipient in $NDR.ToRecipients)
                 {
-                    if ($recipient.Address -ne $null)
+                    if ($null -ne $recipient.Address)
                     {
                         if ($recipient.Address.StartsWith("IMCEAINVALID"))
                         {
-                            Log "[ResendMessages] Invalid To recipient: $($recipient.Address)" Red
+                            Log "Invalid To recipient: $($recipient.Address)" Red
                         }
                         else
                         {
                             $address = $recipient.Address
                             if ( $address.StartsWith("=SMTP:") ) { $address = $address.SubString(6) }
-                            LogVerbose "[ResendMessages] Resending to $($address) based on message recipients"
+                            LogVerbose "Resending to $($address) based on message recipients"
                             $resendTo += $address
                         }
                     }
@@ -1517,7 +2001,7 @@ function ResendMessages()
                         {
                             if ( ![String]::IsNullOrEmpty($mailToMatch.Groups[1].Value) )
                             {
-                                LogVerbose "[ResendMessages] Resending to $($mailToMatch.Groups[1].Value) based on message content"
+                                LogVerbose "Resending to $($mailToMatch.Groups[1].Value) based on message content"
                                 $resendTo += $mailToMatch.Groups[1].Value
                             }
                         }
@@ -1540,7 +2024,7 @@ function ResendMessages()
         if ( $resendTo.Count -lt 1 )
         {
             # We couldn't determine who to send this to, so we fail
-            Log "[ResendMessages] Could not read failed recipients from ndr" Red
+            Log "Could not read failed recipients from ndr" Red
             $ndrProcessFail = $true
         }
         else
@@ -1556,12 +2040,12 @@ function ResendMessages()
                     $toHeader = "$toheader, <$recipient>"
                 }
             }
-            LogVerbose "[ResendMessages] Updated To header value: $toHeader"
+            LogVerbose "Updated To header value: $toHeader"
 
             if ($NDR.Attachments.Count -eq 1)
             {
                 # Attachment is most likely the original message, so resend that
-                LogVerbose "[ResendMessages] Original message attached to NDR"
+                LogVerbose "Original message attached to NDR"
                 $Error.Clear()
                 try
                 {
@@ -1571,18 +2055,18 @@ function ResendMessages()
                     {
                         if ($itemAttachment.Size -gt $MaxMessageSize)
                         {
-                            Log "[ResendMessages] Item too large ($($itemAttachment.Size))" Red
+                            Log "Item too large ($($itemAttachment.Size))" Red
                             $itemAttachment = $null
                             $ndrProcessFail = $true
                         }
                     }
 
-                    if ($itemAttachment -ne $null)
+                    if ($null -ne $itemAttachment)
                     {
                         $itemAttachment.Load([Microsoft.Exchange.WebServices.Data.ItemSchema]::MimeContent)
                     }
 
-                    if ($itemAttachment -ne $null)
+                    if ($null -ne $itemAttachment)
                     {
                         $MIME = $itemAttachment.Item.MimeContent.ToString()
                         if ( $itemAttachment.Item.Attachments.Count -eq 2 )
@@ -1596,22 +2080,21 @@ function ResendMessages()
                                     $clearMIME = StripEncryptedAttachmentsFromMime $MIME
                                     if ($clearMIME.Length -ne $MIME.Length)
                                     {
-                                        LogVerbose "[ResendMessages] Encrypted item found, encrypted attachment removed. Original MIME length: $($MIME.Length)  Updated MIME length: $($clearMIME.Length)"
+                                        LogVerbose "Encrypted item found, encrypted attachment removed. Original MIME length: $($MIME.Length)  Updated MIME length: $($clearMIME.Length)"
                                         $MIME = $clearMIME
                                         $ndrEncrypted = $true
                                     }
                                     else
                                     {
-                                        Log "[ResendMessages] Item with two attachments is not encrypted, processing as normal message. Original MIME length: $($MIME.Length)  Updated MIME length: $($clearMIME.Length)" Yellow
+                                        Log "Item with two attachments is not encrypted, processing as normal message. Original MIME length: $($MIME.Length)  Updated MIME length: $($clearMIME.Length)" Yellow
                                     }
                                 }
                                 else
                                 {
-                                    LogVerbose "[ResendMessages] Encrypted item detected, will be ignored"
+                                    LogVerbose "Encrypted item detected, will be ignored"
                                 }
                             }
                         }
-                        
                         $script:totalBytesRetrieved += $MIME.Length
 
                         if ($WriteDirectlyToRecipientMailbox)
@@ -1621,19 +2104,19 @@ function ResendMessages()
                                 foreach ($targetMailbox in $resendTo)
                                 {
                                     $targetService = CreateService $targetMailbox -ForceImpersonation
-                                    if ($targetService -ne $null)
+                                    if ($null -ne $targetService)
                                     {
                                         try
                                         {
-                                            LogVerbose "[ResendMessages] Writing message into mailbox: $targetMailbox"
+                                            LogVerbose "Writing message into mailbox: $targetMailbox"
                                             $mail = [Microsoft.Exchange.WebServices.Data.EmailMessage]::new($targetService)
                                             $mail.MimeContent = $MIME
                                             $mail.Save([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::Inbox)
-                                            Log "[ResendMessages] Message successfully saved to $targetMailbox" Green
+                                            Log "Message successfully saved to $targetMailbox" Green
                                         }
                                         catch
                                         {
-                                            ReportError "[ResendMessages]"
+                                            ReportError
                                         }
                                     }
                                 }
@@ -1641,13 +2124,13 @@ function ResendMessages()
                             }
                             else
                             {
-                                Log "[ResendMessages] Cannot save directly to mailbox as recipients could not be read" Red
+                                Log "Cannot save directly to mailbox as recipients could not be read" Red
                             }
                         }
                         else
                         {
-                            
                             $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "CC" -HeaderValue ""
+                            $saveToPickupMime = $MIME # Workaround weird PowerShell issue where content of $MIME changes between here and save to pickup code.  Probably scope, but haven't worked it out yet...
                             if ( ![String]::IsNullOrEmpty($ReturnPath) )
                             {
                                 $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "Return-Path" -HeaderValue $ReturnPath
@@ -1657,13 +2140,13 @@ function ResendMessages()
                             {
                                 $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "To" -HeaderValue $toHeader
                             }
-                            if (!$CollectStatsOnly)
+                            if (!$WhatIf)
                             {
                                 # We don't resend the message if we are only collecting statistics
                                 if ($SendUsingSMTP)
                                 {
-                                    LogVerbose "[ResendMessages] Resending message over SMTP"
-                                    if ( SendUsingSMTP -Mime $MIME -recipients $resendTo -Sender $NDR.Sender.Address )
+                                    LogVerbose "Resending message over SMTP"
+                                    if ( SendUsingSMTP -Mime $saveToPickupMime -recipients $resendTo -Sender $NDR.Sender.Address )
                                     {
                                         $ndrProcessed = $true
                                     }
@@ -1674,27 +2157,27 @@ function ResendMessages()
                                 }
                                 else
                                 {
-                                    if ( $SaveToPickupFolder -eq $null)
+                                    if ( $null -eq $SaveToPickupFolder )
                                     {
                                         # Send message from the mailbox
-                                        LogVerbose "[ResendMessages] Resending message"
+                                        LogVerbose "Resending message"
                                         $EmailMessage = New-Object Microsoft.Exchange.WebServices.Data.EmailMessage($script:service)
-                                        $EmailMessage.MimeContent = $MIME
+                                        $EmailMessage.MimeContent = $saveToPickupMime
                                         try
                                         {
                                             $EmailMessage.Send()
                                             $ndrProcessed = $true
                                         } catch
                                         {
-                                            ReportError "[ResendMessages - send message]"
+                                            ReportError "Send message"
                                             $ndrProcessFail = $true
                                         }
                                     }
                                     else
                                     {
                                         # Save message to pickup folder
-                                        $ndrProcessed = SaveMIMEToPickupFolder -mime $MIME -WasEncrypted $ndrEncrypted
-                                        LogVerbose "[ResendMessages] Save to pickup folder success: $ndrProcessed"
+                                        $ndrProcessed = SaveMIMEToPickupFolder -mime $saveToPickupMime -WasEncrypted $ndrEncrypted
+                                        LogVerbose "Save to pickup folder success: $ndrProcessed"
                                         $ndrProcessFail = !$ndrProcessed
                                     }
                                 }
@@ -1704,14 +2187,14 @@ function ResendMessages()
                 }
                 catch
                 {
-                    LogVerbose "[ResendMessages] Failed to read attached message: $Error[0]"
+                    LogVerbose "Failed to read attached message: $Error[0]"
                     $ndrProcessFail = $true
                 }
             }
             else
             {
                 $ndrProcessFail = $true
-                LogVerbose "[ResendMessages] Original message not attached to NDR"
+                LogVerbose "Original message not attached to NDR"
             }
         }
         
@@ -1737,26 +2220,26 @@ function ResendMessages()
             if (![String]::IsNullOrEmpty($ndrBody))
             {
                 # Read the info
-                LogVerbose "[ResendMessages] Attempting to extract message Id and sender from NDR"
+                LogVerbose "Attempting to extract message Id and sender from NDR"
                 $messageId = ExtractHeaderValue $ndrBody "Message-ID"
-                $sender = ExtractHeaderValue $ndrBody "From"
-                if (![String]::IsNullOrEmpty($messageId) -and ![String]::IsNullOrEmpty($sender))
+                $fromHeader = ExtractHeaderValue $ndrBody "From"
+                if (![String]::IsNullOrEmpty($messageId) -and ![String]::IsNullOrEmpty($fromHeader))
                 {
-                    LogVerbose "[ResendMessages] Attempting to resend message $messageId from $sender"
-                    FindAndResendMessage $messageId $sender
+                    LogVerbose "Attempting to resend message $messageId from $fromHeader"
+                    FindAndResendMessage $messageId $fromHeader
                 }
                 else
                 {
-                    LogVerbose "[ResendMessages] Unable to read required information from NDR for resending"
+                    LogVerbose "Unable to read required information from NDR for resending"
                 }
             }
             else
             {
-                LogVerbose "[ResendMessages] Failed to read body of NDR"
+                LogVerbose "Failed to read body of NDR"
             }
         }
 
-        if ($CollectStatsOnly)
+        if ($WhatIf)
         {
             # We work out whether this message was processed or failed by its location (we are collecting statistics only)
             if ($NDR.ParentFolderId -eq $script:moveProcessedItemsToFolderFolder)
@@ -1782,9 +2265,9 @@ function ResendMessages()
         {
             # NDR has been processed, so check if we need to move it
             $script:processedItems++
-            if ( ($script:moveProcessedItemsToFolderFolder -ne $null) -and (!$CollectStatsOnly) )
+            if ( ($null -ne $script:moveProcessedItemsToFolderFolder) -and (!$WhatIf) )
             {
-                LogVerbose "[ResendMessages] Moving processed item"
+                LogVerbose "Moving processed item"
                 try
                 {
                     [void]$NDR.Move($script:moveProcessedItemsToFolderFolder.Id)
@@ -1794,7 +2277,7 @@ function ResendMessages()
                     # If we have an error on move, then we need to store the Id of the item so that we don't process it again in the future
                     $addItemToIgnoreList = $true
                 }
-                ReportError "[ResendMessages]"
+                ReportError
             }
 
             # Update our resent to stats
@@ -1817,9 +2300,9 @@ function ResendMessages()
             # NDR is encrypted, so check if we need to move it
             $script:ignoredItems++
             $script:encryptedItems++
-            if ( ($script:moveEncryptedItemsToFolderFolder -ne $null) -and (!$CollectStatsOnly))
+            if ( ($null -ne $script:moveEncryptedItemsToFolderFolder) -and (!$WhatIf))
             {
-                LogVerbose "[ResendMessages] Moving encrypted item"
+                LogVerbose "Moving encrypted item"
                 try
                 {
                     [void]$NDR.Move($script:moveEncryptedItemsToFolderFolder.Id)
@@ -1829,7 +2312,7 @@ function ResendMessages()
                     # If we have an error on move, then we need to store the Id of the item so that we don't process it again in the future
                     $addItemToIgnoreList = $true
                 }
-                ReportError "[ResendMessages]"
+                ReportError
             }
         }
 
@@ -1838,21 +2321,21 @@ function ResendMessages()
             # We encountered an issue processing this NDR, so we move to error folder
             
             $script:errorItems++
-            if ( ($script:moveErrorItemsToFolderFolder -ne $null) -and (!$CollectStatsOnly) )
+            if ( ($null -ne $script:moveErrorItemsToFolderFolder) -and (!$WhatIf) )
             {
-                LogVerbose "[ResendMessages] Moving error item"
+                LogVerbose "Moving error item"
                 try
                 {
                     $movedItem = $NDR.Move($script:moveErrorItemsToFolderFolder.Id)
-                    Log "[ResendMessages] Failed item id (moved to error folder): $($movedItem.Id.UniqueId)" Red
+                    Log "Failed item id (moved to error folder): $($movedItem.Id.UniqueId)" Red
                 }
                 catch
                 {
                     # If we have an error on move, then we need to store the Id of the item so that we don't process it again in the future
                     $addItemToIgnoreList = $true
-                    Log "[ResendMessages] Failed item id (move failed): $($NDR.Id.UniqueId)" Red
+                    Log "Failed item id (move failed): $($NDR.Id.UniqueId)" Red
                 }
-                ReportError "[ResendMessages]"
+                ReportError
             }
         }
 
@@ -1876,12 +2359,12 @@ function ResendMessages()
             # Collect the item statistics - we want the target email address, subject, message id, time originally sent
             # $resendTo contains the target email address(es)
             $messageId = ExtractHeaderValue $MIME "Message-ID"
-            $sender = ExtractHeaderValue $MIME "From"
+            $fromHeader = ExtractHeaderValue $MIME "From"
             $subject = ExtractHeaderValue $MIME "Subject"
             $sentTime = ExtractHeaderValue $MIME "Date"
             foreach ($targetAddress in $resendTo)
             {
-                "`"$messageId`",`"$sender`",`"$subject`",`"$sentTime`",`"$targetAddress`",`"$ndrProcessed`",`"$ndrProcessFail`",`"$ndrEncrypted`"" | Out-File $StatsCSV -Append
+                "`"$messageId`",`"$fromHeader`",`"$subject`",`"$sentTime`",`"$targetAddress`",`"$ndrProcessed`",`"$ndrProcessFail`",`"$ndrEncrypted`"" | Out-File $StatsCSV -Append
             }
         }
 
@@ -1929,7 +2412,7 @@ function SaveMIMEToPickupFolder()
                 $script:pickUpFolderList += $pickupFolder
             }
         }
-        Log "[SaveMIMEToPickupFolder] $($pickUpFolderList.Length) pickup folder(s) being used (round robin)"
+        Log "$($pickUpFolderList.Length) pickup folder(s) being used (round robin)"
     }
 
     $messageIsValid = $true
@@ -1940,6 +2423,8 @@ function SaveMIMEToPickupFolder()
         $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "Sender" -HeaderValue $ReturnPath
     }
 
+    #$mime | out-file "c:\temp\sendagain\attachmimeinpickup.txt"
+    #exit
     # Check that the message has a valid From header (Sender and Return-Path are optional, so we don't check these)
     $from = ExtractHeaderValue -headers $mime -HeaderName "From"
     if ([String]::IsNullOrEmpty($from))
@@ -1948,19 +2433,19 @@ function SaveMIMEToPickupFolder()
         {
             # No from address found, but we have a default one to apply
             $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "From" -HeaderValue "From: $DefaultFromAddress"
-            Log "[SaveMIMEToPickupFolder] From header was empty, replaced with `"From: $DefaultFromAddress`"" Yellow
+            Log "From header was empty, replaced with `"From: $DefaultFromAddress`"" Yellow
         }
         else
         {
-            Log "[SaveMIMEToPickupFolder] From header was empty, message not saved to pickup folder: $from" Red
+            Log "From header was empty, message not saved to pickup folder: $from" Red
             $messageIsValid = $false
         }
     }
-    LogVerbose "[SaveMIMEToPickupFolder] From header: $from"
+    LogVerbose "From header: $from"
     if (!$RemoveEncryptedAttachments -and $WasEncrypted)
     {
         $messageIsValid = $false
-        Log "[SaveMIMEToPickupFolder] Encrypted message not processed as -RemoveEncryptedAttachments not specified (encrypted attachments must be removed for successful processing)" Yellow
+        Log "Encrypted message not processed as -RemoveEncryptedAttachments not specified (encrypted attachments must be removed for successful processing)" Yellow
         return $false # We don't save these messages to any Pickup debug folder as we know why it has failed
     }
 
@@ -1972,13 +2457,13 @@ function SaveMIMEToPickupFolder()
 
         try
         {
-            Log "[SaveMIMEToPickupFolder] Saving email to: $fileName" Gray
+            Log "Saving email to: $fileName" Gray
             [IO.File]::WriteAllText($fileName, $mime)
             return $true
         }
         catch
         {
-            ReportError "[SaveMIMEToPickupFolder]"
+            ReportError
             return $false # No point in debugging a write failure, as this will be an IO issue                                     
         }
     }
@@ -1989,12 +2474,12 @@ function SaveMIMEToPickupFolder()
         $filename = "$FailPickupFolder\$([DateTime]::Now.Ticks).eml"
         try
         {
-            Log "[SaveMIMEToPickupFolder] Saving debug email to: $fileName" Gray
+            Log "Saving debug email to: $fileName" Gray
             [IO.File]::WriteAllText($fileName, $mime)
         }
         catch
         {
-            ReportError "[SaveMIMEToPickupFolder]"                                      
+            ReportError
         }
     }
     return $false
@@ -2062,7 +2547,6 @@ function ProcessNDRs()
 
     # We create a list of all the items we need to move, and then batch move them later (much faster than doing it one at a time)
     $itemsToResend = New-Object System.Collections.ArrayList
-    $i = 0
 	
     $progressActivity = "Reading NDRs in folder $($Mailbox):$(GetFolderPath($folder))"
     LogVerbose "Building list of NDRs"
@@ -2089,7 +2573,7 @@ function ProcessNDRs()
             {
                 $FindResults = $folder.FindItems($SearchFilter, $View)
             }
-            Sleep -Milliseconds $script:currentThrottlingDelay
+            Start-Sleep -Milliseconds $script:currentThrottlingDelay
         }
         catch
         {
@@ -2105,7 +2589,7 @@ function ProcessNDRs()
                 if ($retries -lt 3)
                 {
                     Log "Waiting 5 minutes until retry" Yellow
-                    Sleep -Seconds 360
+                    Start-Sleep -Seconds 360
                 }
                 else
                 {
@@ -2184,7 +2668,7 @@ function ProcessMailbox()
     }
     Write-Host ([string]::Format("Processing mailbox {0}", $Mailbox)) -ForegroundColor Gray
 	$script:service = CreateService($Mailbox)
-	if ($script:service -eq $Null)
+	if ($null -eq $script:service)
 	{
 		Log "Failed to create ExchangeService" Red
         return
@@ -2228,7 +2712,7 @@ function ProcessMailbox()
     $script:moveErrorItemsToFolderFolder = ValidateFolderMoveParameter $MoveFailedItemsToFolder $script:moveErrorItemsToFolderFolder
     $script:moveEncryptedItemsToFolderFolder = ValidateFolderMoveParameter $MoveEncryptedItemsToFolder $script:moveEncryptedItemsToFolderFolder
 
-    if ($CollectStatsOnly)
+    if ($WhatIf)
     {
         # If we are only collecting stats, then we simply reprocess each of the target folders without resending
         if ($script:moveProcessedItemsToFolderFolder)
@@ -2279,8 +2763,6 @@ if ($IgnoreSSLCertificate)
 if (!(LoadEWSManagedAPI))
 {
 	Write-Host "Failed to locate EWS Managed API, cannot continue" -ForegroundColor Red
-    Write-Host "The API can be downloaded from the Microsoft Download Centre: http://www.microsoft.com/en-us/search/Results.aspx?q=exchange%20web%20services%20managed%20api&form=DLC"
-    Write-Host "Use the latest version available"
 	Exit
 }
 
@@ -2289,9 +2771,9 @@ Add-Type -AssemblyName System.Web
 # Check we have valid credentials
 if ($Credentials -ne $Null)
 {
-    If ($Username -or $Password)
+    If ($OAuth)
     {
-        Write-Host "Please specify *either* -Credentials *or* -Username and -Password" Red
+        Write-Host "Please specify *either* -Credentials *or* -OAuth" Red
         Exit
     }
 }
@@ -2342,14 +2824,14 @@ else
     Log "No resend statistics collected (implies no messages were resent)"
 }
 
-if ($script:Tracer -ne $null)
+if ($null -ne $script:Tracer)
 {
     $script:Tracer.Close()
 }
 
-
-if (![String]::IsNullOrEmpty($SendCompletionEmailTo))
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
+if ($script:logFileStreamWriter)
 {
-    # Send email that the script has finished
-
+    $script:logFileStreamWriter.Close()
+    $script:logFileStreamWriter.Dispose()
 }
