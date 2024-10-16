@@ -1,4 +1,4 @@
-﻿#
+#
 # Merge-MailboxFolder.ps1
 #
 # By David Barrett, Microsoft Ltd. 2015-2023. Use at your own risk.  No warranties are given.
@@ -197,7 +197,7 @@ param (
     [int]$BatchSize = 50
 )
 
-$script:ScriptVersion = "1.4.2"
+$script:ScriptVersion = "1.4.3"
 $scriptStartTime = [DateTime]::Now
 
 # Define our functions
@@ -410,11 +410,17 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
+    if ($null -eq $acquire)
+    {
+        Log "Failed to create token acquisition object" Red
+        exit
+    }
     LogVerbose "Requesting token using certificate auth"
     
     try
     {
-        $script:oauthToken = $acquire.ExecuteAsync().Result
+        $execCall = $acquire.ExecuteAsync()
+        $script:oauthToken = $execCall.Result
     }
     catch
     {
@@ -431,7 +437,15 @@ function GetTokenWithCertificate
     }
 
     # If we get here, we don't have a token so can't continue
-    Log "Failed to obtain OAuth token (no error thrown)" Red
+    if ($null -ne $execCall.Exception)
+    {
+        $global:CertException = $execCall.Exception
+        Log "Failed to obtain OAuth token: $($global:CertException.Message)" Red
+        Log "Full exception available in `$CertException"
+    }
+    else {
+        Log "Failed to obtain OAuth token (no error thrown)" Red
+    }
     exit
 }
 

@@ -164,11 +164,17 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
+    if ($null -eq $acquire)
+    {
+        Log "Failed to create token acquisition object" Red
+        exit
+    }
     LogVerbose "Requesting token using certificate auth"
     
     try
     {
-        $script:oauthToken = $acquire.ExecuteAsync().Result
+        $execCall = $acquire.ExecuteAsync()
+        $script:oauthToken = $execCall.Result
     }
     catch
     {
@@ -185,7 +191,15 @@ function GetTokenWithCertificate
     }
 
     # If we get here, we don't have a token so can't continue
-    Log "Failed to obtain OAuth token (no error thrown)" Red
+    if ($null -ne $execCall.Exception)
+    {
+        $global:CertException = $execCall.Exception
+        Log "Failed to obtain OAuth token: $($global:CertException.Message)" Red
+        Log "Full exception available in `$CertException"
+    }
+    else {
+        Log "Failed to obtain OAuth token (no error thrown)" Red
+    }
     exit
 }
 
@@ -620,72 +634,58 @@ Function CreateTraceListener($exchangeService)
 
     if ($null -eq $script:Tracer)
     {
-        $traceFileForCode = ""
-
-        if (![String]::IsNullOrEmpty($TraceFile))
-        {
-            $traceFileForCode = $traceFile.Replace("\", "\\")
-        }
-
         $TraceListenerClass = @"
-		    using System;
-		    using System.Text;
-		    using System.IO;
-		    using System.Threading;
-		    using Microsoft.Exchange.WebServices.Data;
-		
-		    public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
-		    {
-			    private StreamWriter _traceStream = null;
-                private string _lastResponse = String.Empty;
-                private string _traceFileFullPath = String.Empty;
+            using System;
+            using System.IO;
+            using Microsoft.Exchange.WebServices.Data;
 
-			    public EWSTracer(string traceFileName = "$traceFileForCode" )
-			    {
-				    try
-				    {
-                        if (!String.IsNullOrEmpty(traceFileName))
-					        _traceStream = File.AppendText(traceFileName);
-                        FileInfo fi = new FileInfo(traceFileName);
-                        _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
-				    }
-				    catch { }
+            public class EWSTracer: Microsoft.Exchange.WebServices.Data.ITraceListener
+            {
+                private StreamWriter _traceStream = null;
+                private string _lastResponse = String.Empty;
+                private string _traceFileFullPath = "No trace file configured";
+
+                public EWSTracer(string traceFileName = "" )
+                {
+                    if (!String.IsNullOrEmpty(traceFileName))
+                    {
+                        try
+                        {
+                            _traceStream = File.AppendText(traceFileName);
+                            FileInfo fi = new FileInfo(traceFileName);
+                            _traceFileFullPath = fi.Directory.FullName + "\\" + fi.Name;
+                        }
+                        catch { }
+                    }
                 }
 
-			    ~EWSTracer()
-			    {
-                    Close();
-			    }
-
                 public void Close()
-			    {
-				    try
-				    {
-					    _traceStream.Flush();
-					    _traceStream.Close();
-				    }
-				    catch { }
-			    }
+                {
+                    try
+                    {
+                        _traceStream.Flush();
+                        _traceStream.Close();
+                    }
+                    catch { }
+                }
 
-
-			    public void Trace(string traceType, string traceMessage)
-			    {
+                public void Trace(string traceType, string traceMessage)
+                {
                     if ( traceType.Equals("EwsResponse") )
                         _lastResponse = traceMessage;
-
-                    if ( traceType.Equals("EwsRequest") )
+                    else if ( traceType.Equals("EwsRequest") )
                         _lastResponse = String.Empty;
 
-				    if (_traceStream == null)
-					    return;
+                    if (_traceStream == null)
+                        return;
 
-					try
-					{
-						_traceStream.WriteLine(traceMessage);
-						_traceStream.Flush();
-					}
-					catch { }
-			    }
+                    try
+                    {
+                        _traceStream.WriteLine(traceMessage);
+                        _traceStream.Flush();
+                    }
+                    catch { }
+                }
 
                 public string LastResponse
                 {
@@ -696,13 +696,13 @@ Function CreateTraceListener($exchangeService)
                 {
                     get { return _traceFileFullPath; }
                 }
-		    }
+            }
 "@
 
         if ("EWSTracer" -as [type]) {} else {
             Add-Type -TypeDefinition $TraceListenerClass -ReferencedAssemblies $EWSManagedApiPath
         }
-        $script:Tracer=[EWSTracer]::new($traceFileForCode)
+        $script:Tracer=[EWSTracer]::new($TraceFile)
 
         # Attach the trace listener to the Exchange service
         $exchangeService.TraceListener = $script:Tracer
@@ -835,6 +835,11 @@ Function CreateAutoDiscoverService($exchangeService)
     return $autodiscover;
 }
 
+function SetArchiveMailboxHeaders($ExchangeService, $PrimarySmtpAddress)
+{
+    
+}
+
 function SetPublicFolderHeirarchyHeaders($ExchangeService, $AutodiscoverAddress)
 {
     # Sets the X-PublicFolderMailbox and X-AnchorMailbox properties for a request to public folders
@@ -931,7 +936,6 @@ Function SetPublicFolderContentHeaders($ExchangeService, $PublicFolder)
         {
             if ($extendedProperty.PropertyDefinition -eq $script:PR_REPLICA_LIST)
             {
-                #[byte[]]$ByteArr = ([byte[]])$extendedProperty.Value;
                 $replicaGuid =[System.Text.Encoding]::ASCII.GetString($extendedProperty.Value, 0, 36)
                 break
             }
