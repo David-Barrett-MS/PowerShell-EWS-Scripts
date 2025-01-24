@@ -52,6 +52,9 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Will match only items with the specified sender.")]
     [string]$Sender,
     
+    [Parameter(Mandatory=$False,HelpMessage="Will match only items with the specified sender display name.")]
+    [string]$SenderDisplayName,
+    
     [Parameter(Mandatory=$False,HelpMessage="Only item(s) with this MessageId will be matched.")]
     [string]$MessageId,
 
@@ -148,7 +151,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 200
 )
-$script:ScriptVersion = "1.0.2"
+$script:ScriptVersion = "1.0.3"
 
 # Define our functions
 
@@ -1567,7 +1570,7 @@ Function ThrottledBatchDelete()
         $deleteMode = [Microsoft.Exchange.WebServices.Data.DeleteMode]::HardDelete
     }
 
-    if (!(Test-Path variable:global:DeletedItemCount)) { $global:DeletedItemCount = 0 }
+    if (!(Test-Path variable:global:DeletedItemCount)) { $script:DeletedItemCount = 0 }
 
     $progressActivity = "Deleting items"
 	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
@@ -1589,7 +1592,7 @@ Function ThrottledBatchDelete()
             if ($null -ne $ItemsToDelete[$i])
             {
                 $deleteIds.Add($ItemsToDelete[$i])
-                $global:DeletedItemCount++
+                $script:DeletedItemCount++
             }
             if ($i -ge $ItemsToDelete.Count)
                 { break }
@@ -1636,7 +1639,7 @@ Function ThrottledBatchDelete()
             }
         }
 
-        $global:DeletedItemCount -= (RemoveProcessedItemsFromList $deleteIds $results $SuppressNotFoundErrors $ItemsToDelete)
+        $script:DeletedItemCount -= (RemoveProcessedItemsFromList $deleteIds $results $SuppressNotFoundErrors $ItemsToDelete)
 
         $percentComplete = ( ($totalItems - $ItemsToDelete.Count) / $totalItems ) * 100
         Write-Progress -Activity $progressActivity -Status "$percentComplete% complete" -PercentComplete $percentComplete
@@ -2179,9 +2182,23 @@ Function SearchFolder( $FolderId )
 
     if (![String]::IsNullOrEmpty($Sender))
     {
+        # We check both sender property and MAPI property PR_SENDER_EMAIL_ADDRESS_W for a match (sometimes EWS Sender property may not match)
+        $senderFilter = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+SearchFilterCollection([Microsoft.Exchange.WebServices.Data.LogicalOperator]::Or)
         $senderEmailAddress = New-Object Microsoft.Exchange.WebServices.Data.EmailAddress($Sender)
-        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender, $senderEmailAddress)
+        if (![String]::IsNullOrEmpty($SenderDisplayName))
+        {
+            $senderEmailAddress.Name = $SenderDisplayName
+        }
+        $senderFilter1 = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo([Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender, $senderEmailAddress)
+        $senderFilter2 = New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo($script:PR_SENDER_EMAIL_ADDRESS, $Sender)
+        $senderFilter.Add($senderFilter1)
+        $senderFilter.Add($senderFilter2)
+        $filters += $senderFilter
     }
+    elseif (![String]::IsNullOrEmpty($SenderDisplayName))
+    {
+        $filters += New-Object Microsoft.Exchange.WebServices.Data.SearchFilter+IsEqualTo($script:PR_SENDER_NAME, $SenderDisplayName)
+    }    
 	
     if (![String]::IsNullOrEmpty($MessageId))
     {
@@ -2267,7 +2284,10 @@ if (!(LoadEWSManagedAPI))
 }
 
 $script:searchResults = @()
-  
+$script:PR_CREATION_TIME = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x3007, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::SystemTime)
+$script:PR_SENDER_NAME = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x0C1A, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::String)
+$script:PR_SENDER_EMAIL_ADDRESS = New-Object Microsoft.Exchange.WebServices.Data.ExtendedPropertyDefinition(0x0C1F, [Microsoft.Exchange.WebServices.Data.MapiPropertyType]::String)
+
 # Check whether we have a CSV file as input...
 $FileExists = Test-Path $Mailbox
 If ( $FileExists )
@@ -2289,9 +2309,9 @@ Else
 	SearchMailbox
 }
 
-if ($global:DeletedItemCount)
+if ($script:DeletedItemCount)
 {
-    Log "Total items deleted: $global:DeletedItemCount" Green
+    Log "Total items deleted: $script:DeletedItemCount" Green
 }
 
 Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
