@@ -163,7 +163,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, no actions (e.g. sending on) will be performed (but actions that would be taken will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.6"
+$script:ScriptVersion = "1.2.7"
 
 # Define our functions
 #>** LOGGING FUNCTIONS START **#
@@ -373,11 +373,17 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
+    if ($null -eq $acquire)
+    {
+        Log "Failed to create token acquisition object" Red
+        exit
+    }
     LogVerbose "Requesting token using certificate auth"
     
     try
     {
-        $script:oauthToken = $acquire.ExecuteAsync().Result
+        $execCall = $acquire.ExecuteAsync()
+        $script:oauthToken = $execCall.Result
     }
     catch
     {
@@ -394,7 +400,15 @@ function GetTokenWithCertificate
     }
 
     # If we get here, we don't have a token so can't continue
-    Log "Failed to obtain OAuth token (no error thrown)" Red
+    if ($null -ne $execCall.Exception)
+    {
+        $global:CertException = $execCall.Exception
+        Log "Failed to obtain OAuth token: $($global:CertException.Message)" Red
+        Log "Full exception available in `$CertException"
+    }
+    else {
+        Log "Failed to obtain OAuth token (no error thrown)" Red
+    }
     exit
 }
 
@@ -1550,9 +1564,9 @@ function FindAndResendMessage()
 {
     param (
         [String]$MessageId,
-        [String]$Sender )
+        [String]$SenderAddress )
 
-    if ($Sender -match "\<(.+)\>")
+    if ($SenderAddress -match "\<(.+)\>")
     {
         $senderEmail = $matches[1]
         LogVerbose "Email sender: $senderEmail"
@@ -1640,10 +1654,9 @@ function ExtractHeaderValue()
 
     # Check if we have the full MIME or just headers (we are only interested in the headers)
     $endOfHeaders = $headers.IndexOf("$([Environment]::NewLine)$([Environment]::NewLine)")
-    $content = ""
     if ($endOfHeaders -gt 0)
     {
-        $content = $MIME.SubString($endOfHeaders+2)
+        #$content = $MIME.SubString($endOfHeaders+2)
         $headers = $MIME.SubString(0,$endOfHeaders)
     }
     $headerLines = $headers -split "`r`n|`r|`n"
@@ -1748,7 +1761,7 @@ function SendUsingSMTP()
    param (
         [String]$MIME,
         $recipients,
-        [String]$sender
+        [String]$senderSMTP
     )
 
     # Send-MailMessage and SmtpClient don't support sending MIME directly, so this is more complex than I thought
@@ -2162,7 +2175,9 @@ function ResendMessages()
                                         # Send message from the mailbox
                                         LogVerbose "Resending message"
                                         $EmailMessage = New-Object Microsoft.Exchange.WebServices.Data.EmailMessage($script:service)
-                                        $EmailMessage.MimeContent = $saveToPickupMime
+                                        $bytes = [byte[]]::new($saveToPickupMime.Length)
+                                        [System.Text.Encoding]::UTF8.GetBytes($saveToPickupMime, 0, $saveToPickupMime.Length, $bytes, 0)
+                                        $EmailMessage.MimeContent = New-Object Microsoft.Exchange.WebServices.Data.MimeContent("UTF-8", $bytes)
                                         try
                                         {
                                             $EmailMessage.Send()
@@ -2514,7 +2529,6 @@ function PerfReport()
         $totalProcessedPerMinute = 0
     }
 
-    $total = $script:processedItems + $script:errorItems
     $average = 0
     $averageMb = "0Mib"
     if ($script:processedItems -gt 0)
