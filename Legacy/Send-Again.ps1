@@ -163,7 +163,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, no actions (e.g. sending on) will be performed (but actions that would be taken will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.2.7"
+$script:ScriptVersion = "1.2.8"
 
 # Define our functions
 #>** LOGGING FUNCTIONS START **#
@@ -2146,12 +2146,12 @@ function ResendMessages()
                             $saveToPickupMime = $MIME # Workaround weird PowerShell issue where content of $MIME changes between here and save to pickup code.  Probably scope, but haven't worked it out yet...
                             if ( ![String]::IsNullOrEmpty($ReturnPath) )
                             {
-                                $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "Return-Path" -HeaderValue $ReturnPath
+                                $saveToPickupMime = ReplaceMIMEHeader -MIME $saveToPickupMime -HeaderName "Return-Path" -HeaderValue $ReturnPath
                             }
 
                             if (![String]::IsNullOrEmpty($toHeader))
                             {
-                                $MIME = ReplaceMIMEHeader -MIME $MIME -HeaderName "To" -HeaderValue $toHeader
+                                $saveToPickupMime = ReplaceMIMEHeader -MIME $saveToPickupMime -HeaderName "To" -HeaderValue $toHeader
                             }
                             if (!$WhatIf)
                             {
