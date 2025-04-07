@@ -1,7 +1,7 @@
 #
 # Create-MailboxBatches.ps1
 #
-# By David Barrett, Microsoft Ltd. 2016-2021. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
@@ -14,15 +14,18 @@
 
 
 param (
-	[Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with Exchange (PowerShell)")]
+	[Parameter(Mandatory=$False,HelpMessage="Use Exchange Online PowerShell module to connect (must be installed)")]
+    [switch] $ExchangeOnline,
+    
+    [Parameter(Mandatory=$False,HelpMessage="Credentials used to authenticate with Exchange PowerShell for on-premises")]
     [alias("Credentials")]
     [System.Management.Automation.PSCredential]$Credential,
 				
-	[Parameter(Mandatory=$False,HelpMessage="PowerShell Url (default is Office 365 Url: https://ps.outlook.com/powershell/)")]
-    [String]$PowerShellUrl = "https://ps.outlook.com/powershell/",
+	[Parameter(Mandatory=$False,HelpMessage="On-premises PowerShell Url")]
+    [String]$PowerShellUrl,
     
     [Parameter(Mandatory=$False,HelpMessage="Same as Get-Mailbox -Filter parameter, use for filtering")]	
-	$Filter = "*",
+	$Filter = "",
 
     [Parameter(Mandatory=$False,HelpMessage="Same as Get-Mailbox -OrganizationalUnit parameter, use for filtering")]	
 	$OrganizationalUnit,
@@ -72,6 +75,17 @@ Function ImportExchangeManagementSession()
         return
     }
 
+    if ($ExchangeOnline)
+    {
+        Connect-ExchangeOnline
+        if ( CmdletsAvailable $RequiredCmdlets $True )
+        {
+            return
+        }
+        Write-Host "Failed to connect to Exchange Online PowerShell" -ForegroundColor Red
+        exit
+    }
+
     if ([String]::IsNullOrEmpty($PowerShellUrl))
     {
         Write-Host "PowerShell Url not specified and Exchange PowerShell session not available.  Cannot continue." -ForegroundColor Red
@@ -80,7 +94,7 @@ Function ImportExchangeManagementSession()
 
     Write-Host "Attempting to connect to and import Exchange Management session" -ForegroundColor Gray
     $global:session = $null
-    if ($Credentials -eq $null)
+    if ($null -eq $Credentials)
     {
         # No credentials specified, so we attempt to connect without specifying them (which will attempt to authenticate as the logged on user)
         $global:session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri $PowerShellUrl -AllowRedirection 
@@ -99,7 +113,7 @@ Function ImportExchangeManagementSession()
         }
     }
 
-    if ($global:session -eq $null)
+    if ($null -eq $global:session)
     {
         Write-Host "Failed to open Exchange Administration session, cannot continue" -ForegroundColor Red
         exit
@@ -133,24 +147,42 @@ if ( !($ExportBatchPath.EndsWith("\")) )
 # Validate the availability of Get-Mailbox
 ImportExchangeManagementSession( @( "Get-Mailbox") )
 
-# Retrieve all mailboxes
+$params = @{
+    ResultSize = "Unlimited"
+}
 if (![String]::IsNullOrEmpty($OrganizationalUnit))
 {
-    $mailboxes = Get-Mailbox -ResultSize Unlimited -Filter $Filter -OrganizationalUnit $OrganizationalUnit
+    $params.OrganizationalUnit = $OrganizationalUnit
 }
-else
+if (![String]::IsNullOrEmpty($Filter))
 {
-    $mailboxes = Get-Mailbox -ResultSize Unlimited -Filter $Filter
+    $params.Filter = $Filter
+}
+
+
+# Retrieve all mailboxes
+if ($ExchangeOnline)
+{
+    $params.PropertySets = "Minimum"
+    $global:mailboxes = Get-EXOMailbox @params
+}
+else {
+    $mailboxes = Get-Mailbox @params
 }
 
 # Now export the primary SMTP addresses of each mailbox to a file
 $fileNum = 1
 $userCount = 0
 foreach ($mailbox in $mailboxes) {
-    $primarySmtpAddress = $mailbox.PrimarySmtpAddress.Address
+    $primarySmtpAddress = $mailbox.PrimarySmtpAddress
     if ([String]::IsNullOrEmpty($primarySmtpAddress))
     {
         $primarySmtpAddress = $mailbox.WindowsEmailAddress
+    }
+    if ([String]::IsNullOrEmpty($primarySmtpAddress))
+    {
+        Write-Host "No primary SMTP address found for mailbox $($mailbox.Name)" -ForegroundColor Yellow
+        continue
     }
     Write-Verbose $primarySmtpAddress
     $primarySmtpAddress | Out-File "$ExportBatchPath\$fileNum.txt" -Append
