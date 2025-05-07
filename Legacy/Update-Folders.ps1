@@ -1,4 +1,4 @@
-﻿#
+#
 # Update-Folders.ps1
 #
 # By David Barrett, Microsoft Ltd. 2016-2021. Use at your own risk.  No warranties are given.
@@ -44,13 +44,13 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Changes the display name of the folder(s).")]
     $NewDisplayName,
     
-    [Parameter(Mandatory=$False,HelpMessage="Any characters defined here will be removed from any folder names use an array of characters, e.g. @('.').")]
+    [Parameter(Mandatory=$False,HelpMessage="Any characters defined here will be removed from any folder names. Use an array of characters, e.g. @('.').")]
     $RemoveCharactersFromDisplayName,
     
     [Parameter(Mandatory=$False,HelpMessage="Sets the class of the folder(s) to that specified (e.g. IPF.Note).")]
     $FolderClass,
     
-    [Parameter(Mandatory=$False,HelpMessage="If specified, any folders that do not have an item class defined (i.e. it is empty) will have the item class set.  If -FolderClass is specified, all blank folder are set to that - otherwise, the class is set to the same as the parent folder.")]
+    [Parameter(Mandatory=$False,HelpMessage="If specified, any folders that do not have an item class defined (i.e. it is empty) will have the item class set.  If -FolderClass is not specified, the class is set to the same as the parent folder.")]
     [switch]$RepairFolderClass,
     
     [Parameter(Mandatory=$False,HelpMessage="If this switch is present, subfolders will also be processed.")]
@@ -73,6 +73,9 @@ param (
 
     [Parameter(Mandatory=$False,HelpMessage="If specified, only folders that match the given values in the given properties will be updated.  Properties must be supplied as a Dictionary @{""propId"" = ""value""}.")]
     $PropertiesMustMatch,
+    
+    [Parameter(Mandatory=$False,HelpMessage="Hides the folder(s) (PidTagAttributeHidden is set to true).")]
+    [switch]$Hide,
     
     [Parameter(Mandatory=$False,HelpMessage="Deletes the folder(s).")]
     [switch]$Delete,
@@ -160,7 +163,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If specified, changes will be made to the mailbox (but actions that would be taken will be logged).")]	
     [switch]$WhatIf
 )
-$script:ScriptVersion = "1.0.7"
+$script:ScriptVersion = "1.0.8"
 
 # Define our functions
 
@@ -371,11 +374,17 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
+    if ($null -eq $acquire)
+    {
+        Log "Failed to create token acquisition object" Red
+        exit
+    }
     LogVerbose "Requesting token using certificate auth"
     
     try
     {
-        $script:oauthToken = $acquire.ExecuteAsync().Result
+        $execCall = $acquire.ExecuteAsync()
+        $script:oauthToken = $execCall.Result
     }
     catch
     {
@@ -392,7 +401,15 @@ function GetTokenWithCertificate
     }
 
     # If we get here, we don't have a token so can't continue
-    Log "Failed to obtain OAuth token (no error thrown)" Red
+    if ($null -ne $execCall.Exception)
+    {
+        $global:CertException = $execCall.Exception
+        Log "Failed to obtain OAuth token: $($global:CertException.Message)" Red
+        Log "Full exception available in `$CertException"
+    }
+    else {
+        Log "Failed to obtain OAuth token (no error thrown)" Red
+    }
     exit
 }
 
@@ -1836,7 +1853,7 @@ function FolderPropertiesMatchRequirements($folder)
                     # Check MAPI extended property
                     LogVerbose "Checking MAPI Prop $($folderProperty.PropertyDefinition.Tag) ($($folderProperty.Value)) against $($script:propertiesMustMatchEws[$requiredProperty])"
                     $areEqual = Compare-Object $folderProperty.Value $script:propertiesMustMatchEws[$requiredProperty] -SyncWindow 0
-                    $propMatches = $areEqual -eq $null
+                    $propMatches = $null -eq $areEqual
                     break
                 }
             }
@@ -1859,7 +1876,12 @@ Function HexStringToByteArray {
     $Bytes = [byte[]]::new($HexString.Length / 2)
 
     For($i=0; $i -lt $HexString.Length; $i+=2){
-        $Bytes[$i/2] = [convert]::ToByte($HexString.Substring($i, 2), 16)
+        try {
+            $Bytes[$i/2] = [convert]::ToByte($HexString.Substring($i, 2), 16)    
+        }
+        catch {
+            return $null # If we fail to convert any single byte, then we didn't have a byte array
+        }       
     }
 
     return $Bytes
@@ -1904,8 +1926,14 @@ Function AddFolderProperties($folder)
                     }
                     else
                     {
-                        # Parameter is binary but not byte array - assume it is hex string and convert
+                        # Parameter is binary but not byte array - test if it is a hex string
+                        $bytes = $null
                         $bytes = HexStringToByteArray $value
+                        if ($null -eq $bytes)
+                        {
+                            # Not a hex string, so try to convert it to a byte array
+                            $bytes = [System.Convert]::FromBase64String($value)
+                        }
                     }
                     $script:addFolderPropsEws.Add($propdef, $bytes)
                 }
@@ -1925,7 +1953,6 @@ Function AddFolderProperties($folder)
     # Now we add the properties to the folder
     foreach ($addProperty in $script:addFolderPropsEws.Keys)
     {
-
         $folder.SetExtendedProperty($addProperty, $script:addFolderPropsEws[$addProperty])
     }
 
@@ -2244,7 +2271,6 @@ Function PurgeFolder($Folder)
 
     # We create a list of all the items we need to move, and then batch move them later (much faster than doing it one at a time)
     $itemsToDelete = New-Object System.Collections.ArrayList
-    $i = 0
 	
     $progressActivity = "Reading items in folder $(GetFolderPath($Folder))"
     LogVerbose "Building list of items to delete from $($Folder.DisplayName)"
@@ -2853,4 +2879,17 @@ Else
 {
 	# Process as single mailbox
 	ProcessMailbox
+}
+
+if ($null -ne $script:Tracer)
+{
+    $script:Tracer.Close()
+}
+
+
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
+if ($script:logFileStreamWriter)
+{
+    $script:logFileStreamWriter.Close()
+    $script:logFileStreamWriter.Dispose()
 }
