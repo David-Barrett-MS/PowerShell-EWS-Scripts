@@ -1,4 +1,4 @@
-﻿#
+#
 # Remove-DuplicateItems.ps1
 #
 # By David Barrett, Microsoft Ltd. 2017-2023. Use at your own risk.  No warranties are given.
@@ -125,7 +125,7 @@ param (
     [switch]$WhatIf
 
 )
-$script:ScriptVersion = "1.2.2"
+$script:ScriptVersion = "1.2.3"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -338,11 +338,17 @@ function GetTokenWithCertificate
     $scopes = New-Object System.Collections.Generic.List[string]
     $scopes.Add("https://outlook.office365.com/.default")
     $acquire = $cca.AcquireTokenForClient($scopes)
+    if ($null -eq $acquire)
+    {
+        Log "Failed to create token acquisition object" Red
+        exit
+    }
     LogVerbose "Requesting token using certificate auth"
     
     try
     {
-        $script:oauthToken = $acquire.ExecuteAsync().Result
+        $execCall = $acquire.ExecuteAsync()
+        $script:oauthToken = $execCall.Result
     }
     catch
     {
@@ -359,7 +365,15 @@ function GetTokenWithCertificate
     }
 
     # If we get here, we don't have a token so can't continue
-    Log "Failed to obtain OAuth token (no error thrown)" Red
+    if ($null -ne $execCall.Exception)
+    {
+        $global:CertException = $execCall.Exception
+        Log "Failed to obtain OAuth token: $($global:CertException.Message)" Red
+        Log "Full exception available in `$CertException"
+    }
+    else {
+        Log "Failed to obtain OAuth token (no error thrown)" Red
+    }
     exit
 }
 
@@ -1619,24 +1633,42 @@ function SearchForDuplicates($folder)
     {
         SetClientRequestId $script:service
         ApplyEWSOAuthCredentials
-        $results = $Folder.FindItems($view)
-        $moreItems = $results.MoreAvailable
-        $view.Offset = $results.NextPageOffset
-        foreach ($item in $results)
-        {
-            LogVerbose "Processing: $($item.Subject)"
-            If (IsDuplicate($item))
+        $results = $null
+        try {
+            $results = $Folder.FindItems($view)
+        }
+        catch {
+            if (Throttled)
             {
-                if (-not $script:debug -or $script:debugMaxItems-- -gt 0)
-                {
-                    $script:duplicateItems += $item
-                }
-                $dupeCount++
+                SetClientRequestId $script:service
+                ApplyEWSOAuthCredentials
+                $results = $Folder.FindItems($view)
             }
-            $processedCount++
-            if ($processedCount % 100 -eq 0)
+            else
             {
-                Write-Progress -Activity $activity -Status "$processedCount of $itemCount item(s) read" -PercentComplete (($processedCount/$itemCount)*100)
+                throw $_
+            }
+        }
+
+        if ( $null -ne $results ) {
+            $moreItems = $results.MoreAvailable
+            $view.Offset = $results.NextPageOffset
+            foreach ($item in $results)
+            {
+                LogVerbose "Processing: $($item.Subject)"
+                If (IsDuplicate($item))
+                {
+                    if (-not $script:debug -or $script:debugMaxItems-- -gt 0)
+                    {
+                        $script:duplicateItems += $item
+                    }
+                    $dupeCount++
+                }
+                $processedCount++
+                if ($processedCount % 100 -eq 0)
+                {
+                    Write-Progress -Activity $activity -Status "$processedCount of $itemCount item(s) read" -PercentComplete (($processedCount/$itemCount)*100)
+                }
             }
         }
     }
