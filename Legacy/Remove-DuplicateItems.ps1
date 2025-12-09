@@ -125,7 +125,7 @@ param (
     [switch]$WhatIf
 
 )
-$script:ScriptVersion = "1.2.3"
+$script:ScriptVersion = "1.2.4"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -1933,7 +1933,7 @@ Function ThrottledBatchDelete()
     # Send request to delete items, allowing for throttling (which in this case is likely to manifest as time-out errors)
     param (
         $ItemsToDelete,
-        $BatchSize = 500,
+        $BatchSize = 20,
         $SuppressNotFoundErrors = $false
     )
 
