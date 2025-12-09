@@ -125,7 +125,7 @@ param (
     [switch]$WhatIf
 
 )
-$script:ScriptVersion = "1.2.4"
+$script:ScriptVersion = "1.2.5"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -2420,7 +2420,7 @@ $script:requiredFolderProperties = New-Object Microsoft.Exchange.WebServices.Dat
 
 Write-Host ""
 
-$script:currentBatchSize = 100
+$script:currentBatchSize = 20
 
 # Check whether we have a CSV file as input...
 $FileExists = Test-Path $Mailbox
