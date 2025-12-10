@@ -125,7 +125,7 @@ param (
     [switch]$WhatIf
 
 )
-$script:ScriptVersion = "1.2.5"
+$script:ScriptVersion = "1.2.6"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -1569,9 +1569,38 @@ function SearchForDuplicates($folder)
             LogVerbose "Processing subfolders of $($folder.DisplayName)"
 			$FolderView = New-Object Microsoft.Exchange.WebServices.Data.FolderView(1000)
 			$FolderView.PropertySet = $script:requiredFolderProperties
-            SetClientRequestId $script:service
-            ApplyEWSOAuthCredentials
-            $findFolderResults = $folder.FindFolders($FolderView)
+
+            $retries = 0
+            $findFolderResults = $null
+            while ($null -eq $findFolderResults)
+            {
+                try {
+                    SetClientRequestId $script:service
+                    ApplyEWSOAuthCredentials
+                    $findFolderResults = $folder.FindFolders($FolderView)
+                }
+                catch {
+                    if (Throttled)
+                    {
+                        SetClientRequestId $script:service
+                        ApplyEWSOAuthCredentials
+                        $findFolderResults = $folder.FindFolders($FolderView)
+                    }
+                    else
+                    {
+                        if ($retries++ -ge 5)
+                        {
+                            Log "Permanent exception when attempting to retrieve items: $($_.Exception.Message)" Red
+                            throw $_
+                        }
+                        # For other errors, we'll wait five seconds and then try again
+                        $sleep = [Math]::Pow($retries, 2) * 5
+                        Log "Error retrieving folders: $($_.Exception.Message).  Retrying in $sleep seconds..." Yellow
+                        Start-Sleep -Seconds $sleep
+                    }
+                }
+            }
+
 			ForEach ($subfolder in $findFolderResults.Folders)
 			{
                 if ($subFolder.Id.UniqueId -eq $script:deletedItemsFolder.Id.UniqueId)
@@ -1634,19 +1663,31 @@ function SearchForDuplicates($folder)
         SetClientRequestId $script:service
         ApplyEWSOAuthCredentials
         $results = $null
-        try {
-            $results = $Folder.FindItems($view)
-        }
-        catch {
-            if (Throttled)
-            {
-                SetClientRequestId $script:service
-                ApplyEWSOAuthCredentials
+        $retries = 0
+        while ($null -eq $results)
+        {
+            try {
                 $results = $Folder.FindItems($view)
             }
-            else
-            {
-                throw $_
+            catch {
+                if (Throttled)
+                {
+                    SetClientRequestId $script:service
+                    ApplyEWSOAuthCredentials
+                    $results = $Folder.FindItems($view)
+                }
+                else
+                {
+                    if ($retries++ -ge 5)
+                    {
+                        Log "Permanent exception when attempting to retrieve items: $($_.Exception.Message)" Red
+                        throw $_
+                    }
+                    # For other errors, we'll wait five seconds and then try again
+                    $sleep = [Math]::Pow($retries, 2) * 5
+                    Log "Error retrieving items: $($_.Exception.Message).  Retrying in $sleep seconds..." Yellow
+                    Start-Sleep -Seconds $sleep
+                }
             }
         }
 
@@ -2443,9 +2484,15 @@ Else
 	ProcessMailbox
 }
 
-Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
+if ($null -ne $script:Tracer)
+{
+    $script:Tracer.Close()
+}
 if ($script:logFileStreamWriter)
 {
     $script:logFileStreamWriter.Close()
     $script:logFileStreamWriter.Dispose()
 }
+
+
+Log "Script finished in $([DateTime]::Now.SubTract($scriptStartTime).ToString())" Green
