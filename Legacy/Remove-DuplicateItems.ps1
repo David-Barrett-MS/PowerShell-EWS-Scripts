@@ -125,7 +125,7 @@ param (
     [switch]$WhatIf
 
 )
-$script:ScriptVersion = "1.2.6"
+$script:ScriptVersion = "1.2.7"
 $script:debug = $false
 $script:debugMaxItems = 3
 
@@ -817,7 +817,7 @@ Function CreateTraceListener($exchangeService)
             {
                 private StreamWriter _traceStream = null;
                 private string _lastResponse = String.Empty;
-                private string _traceFileFullPath = "No trace file configured";
+                private string _traceFileFullPath = "Failed to create trace file";
 
                 public EWSTracer(string traceFileName = "" )
                 {
@@ -1824,6 +1824,11 @@ Function ThrottledBatchMove()
         $TargetFolderId
     )
 
+    if ($Archive)
+    {
+        $script:currentBatchSize = 4
+    }
+
     $consecutive401Errors = 0
 
 	$itemId = New-Object Microsoft.Exchange.WebServices.Data.ItemId("xx")
@@ -2144,7 +2149,7 @@ Function BatchMoveDuplicates()
     }
     else
     {
-        Log "$($batchMoveIds.Count) items were not deleted" Yellow
+        Log "$($batchMoveIds.Count) items were not moved" Yellow
     }
 }
 
@@ -2155,6 +2160,11 @@ Function DecreaseBatchSize()
         $DecreaseMultiplier = 0.8
     )
 
+    if ($Archive)
+    {
+        $script:currentBatchSize = 2
+        return
+    }
     $script:currentBatchSize = [int]($script:currentBatchSize * $DecreaseMultiplier)
     if ($script:currentBatchSize -lt 50) { $script:currentBatchSize = 50 }
     LogVerbose "Retrying with smaller batch size of $($script:currentBatchSize)"
