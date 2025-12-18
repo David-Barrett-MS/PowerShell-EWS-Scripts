@@ -12,7 +12,7 @@
 # SAMPLES, EVEN IF MICROSOFT HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. BECAUSE SOME STATES DO NOT ALLOW THE EXCLUSION OR LIMITATION
 # OF LIABILITY FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES, THE ABOVE LIMITATION MAY NOT APPLY TO YOU.
 
-$version = "1.1.6"
+$version = "1.1.8"
 
 Function Log([string]$Details, [ConsoleColor]$Colour)
 {
@@ -532,6 +532,46 @@ Function Check-NamedProps
                                         if ( $nameMatch )
                                         {
                                             Write-Progress -Activity "Searching for properties" -Status "Searching for property $($namedProp.PropNumber)" -PercentComplete (($currentProp++/$namedPropCount)*100)
+
+                                            if ($NamedPropType -eq "Unknown")
+                                            {
+                                                # As we do not know the type, we have to search for all types, and stop when we find a message with that prop
+                                                # https://learn.microsoft.com/en-us/office/client-developer/outlook/mapi/property-types
+                                                $propTypesToSearch = @("0000", "0001","0002","0003","0004","0005", "0006", "0007", "000a", "000b", "000d", "0014", "001e","001f","0040","0048","00fb","0105","00fd","00fe","0102")
+                                                foreach ($type in $propTypesToSearch)
+                                                {
+                                                    $propId = "p$('{0:x}' -f $namedProp.PropNumber)$type"
+                                                    
+                                                    $messageQuery = "SELECT MessageId, FolderId FROM Message WHERE MailboxPartitionNumber=$($mbx.MailboxNumber) AND $propId != null"
+                                                    LogVerbose "Message query: $messageQuery"
+                                                    $messages = Get-StoreQuery -Database $database.Name -Query $messageQuery -Unlimited
+
+                                                    # Get a valid message count.  Store query returns a blank record rather than no records when no data is found
+                                                    $messageCount = $messages.Count
+                                                    if (!$messageCount)
+                                                    {
+                                                        $messageCount = 0
+                                                        if (![String]::IsNullOrEmpty($messages.FolderId) -and ![String]::IsNullOrEmpty($messages.MessageId))
+                                                        {
+                                                            $messageCount = 1
+                                                        }
+                                                    }
+                                                    LogVerbose "Number of messages returned: $($messageCount)"
+
+                                                    if ($messageCount -gt 0)
+                                                    {
+                                                        # We found messages with this property type, so we can stop searching other types
+                                                        $NamedPropType = $type
+                                                        LogVerbose "Determined named prop type as: $NamedPropType"
+                                                        break
+                                                    }
+                                                }
+                                                if ($NamedPropType -eq "Unknown")
+                                                {
+                                                    Log "Could not determine property type for named prop $($namedProp.PropName) ($($namedProp.PropGuid)/$($namedProp.PropNumber)), skipping message search" Yellow
+                                                    continue
+                                                }
+                                            }
                                             $propId = "p$('{0:x}' -f $namedProp.PropNumber)$NamedPropType"
                                             
                                             $messageQuery = "SELECT MessageId, FolderId FROM Message WHERE MailboxPartitionNumber=$($mbx.MailboxNumber) AND $propId != null"
@@ -591,6 +631,7 @@ Function Check-NamedProps
                                     }
                                     Write-Progress -Activity "Searching for properties" -Completed
                                     DumpEntryIdList $entryIdsDumpFile $propIds $true
+                                    Log "$($propIds.Count) message(s) found with specified properties" Green
                                 }
                             }
                         }
@@ -604,7 +645,7 @@ Function Check-NamedProps
             }
         }
         Write-Progress -Activity "Reading mailboxes" -Completed
-        Log "Mailbox processing finished" Green
+        Log "Mailbox processing finished." Green
     }
 
     End
