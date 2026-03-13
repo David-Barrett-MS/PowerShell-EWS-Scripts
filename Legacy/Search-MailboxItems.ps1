@@ -1,7 +1,7 @@
 #
 # Search-MailboxItems.ps1
 #
-# By David Barrett, Microsoft Ltd. 2013-2023. Use at your own risk.  No warranties are given.
+# By David Barrett, Microsoft Ltd. 2025. Use at your own risk.  No warranties are given.
 #
 #  DISCLAIMER:
 # THIS CODE IS SAMPLE CODE. THESE SAMPLES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.
@@ -18,7 +18,6 @@ param (
     [string]$Mailbox,
 	
     [Parameter(Mandatory=$False,HelpMessage="If this switch is specified, items will be searched for in the archive mailbox (otherwise, the main mailbox is searched).")]
-    [alias("SearchArchive")]
     [switch]$Archive,
 
     [Parameter(Mandatory=$False,HelpMessage="If this switch is specified, only associated items will be searched (https://learn.microsoft.com/en-us/exchange/client-developer/web-service-reference/finditem#traversal-attribute-values).")]
@@ -26,6 +25,9 @@ param (
 	
     [Parameter(Mandatory=$False,HelpMessage="If this switch is specified, then subfolders of any specified folder will also be searched.")]
     [switch]$ProcessSubfolders,
+
+    [Parameter(Mandatory=$False,HelpMessage="If specified, matching items will be exported in MIME format to the given file system path.  Mailbox folder paths will be maintained.")]
+    [string]$ExportMIMEToFileSystemPath,
 	
     [Parameter(Mandatory=$False,HelpMessage="Specifies the folder(s) to be searched (if not present, then the Inbox folder will be searched).  Any exclusions override this list.")]
     $IncludeFolderList,
@@ -52,7 +54,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Will match only items with the specified sender.")]
     [string]$Sender,
     
-    [Parameter(Mandatory=$False,HelpMessage="Will match only items with the specified sender display name.")]
+    [Parameter(Mandatory=$False,HelpMessage="Will match only items with the specified sender display name.  If Sender is also specified, then Sender must also match.")]
     [string]$SenderDisplayName,
     
     [Parameter(Mandatory=$False,HelpMessage="Only item(s) with this MessageId will be matched.")]
@@ -151,7 +153,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 200
 )
-$script:ScriptVersion = "1.0.3"
+$script:ScriptVersion = "1.0.4"
 
 # Define our functions
 
@@ -841,7 +843,7 @@ Function CreateTraceListener($exchangeService)
             {
                 private StreamWriter _traceStream = null;
                 private string _lastResponse = String.Empty;
-                private string _traceFileFullPath = "No trace file configured";
+                private string _traceFileFullPath = "Failed to create trace file";
 
                 public EWSTracer(string traceFileName = "" )
                 {
@@ -1752,25 +1754,120 @@ Function InitLists()
     $script:ItemsToUpdate = [Activator]::CreateInstance($genericItemList)
 }
 
+Function ExportItemToMIME()
+{
+    # Export an item's MIME content to the file system, maintaining folder structure
+    param (
+        $Item,
+        $FolderPath,
+        $ExportBasePath
+    )
+    
+    # Check if MIME content is available (should already be loaded)
+    if ($null -eq $Item.MimeContent)
+    {
+        Log "MIME content not available for item" Yellow
+        return
+    }
+    
+    # Create the folder structure matching the mailbox folder path
+    $exportFolderPath = Join-Path $ExportBasePath $FolderPath.TrimStart('\')
+    if (!(Test-Path $exportFolderPath))
+    {
+        try
+        {
+            New-Item -ItemType Directory -Path $exportFolderPath -Force | Out-Null
+            LogVerbose "Created export folder: $exportFolderPath"
+        }
+        catch
+        {
+            Log "Failed to create export folder $exportFolderPath : $($Error[0])" Red
+            return
+        }
+    }
+    
+    # Determine filename based on Internet Message ID
+    $fileName = "message.eml"
+    if ($null -ne $Item.InternetMessageId -and ![String]::IsNullOrEmpty($Item.InternetMessageId))
+    {
+        # Clean the message ID to make it filesystem-safe
+        $messageId = $Item.InternetMessageId -replace '[<>:"/\\|?*]', '_'
+        $fileName = "$messageId.eml"
+    }
+    elseif ($null -ne $Item.Id)
+    {
+        # Fall back to using item ID if no message ID
+        $itemId = $Item.Id.UniqueId -replace '[<>:"/\\|?*]', '_'
+        if ($itemId.Length -gt 50)
+        {
+            $itemId = $itemId.Substring(0, 50)
+        }
+        $fileName = "$itemId.eml"
+    }
+    
+    $exportFilePath = Join-Path $exportFolderPath $fileName
+    
+    # Handle duplicate filenames
+    $counter = 1
+    $baseFilePath = $exportFilePath
+    while (Test-Path $exportFilePath)
+    {
+        $exportFilePath = $baseFilePath -replace '\.eml$', "_$counter.eml"
+        $counter++
+    }
+    
+    # Save the MIME content (Content property is already in byte format, not Base64)
+    try
+    {
+        [System.IO.File]::WriteAllBytes($exportFilePath, $Item.MimeContent.Content) | out-null
+        LogVerbose "Exported item to: $exportFilePath"
+    }
+    catch
+    {
+        Log "Failed to save MIME content to $exportFilePath : $($Error[0])" Red
+    }
+}
+
 Function ProcessItem( $item, $folderPath )
 {
 	# We have found an item, so this function handles any processing
 
-    # Load any additional requested properties (will only happen if $ViewProperties was set)
+    # Load any additional requested properties (will only happen if $ViewProperties was set or export is enabled)
+    $needsLoad = $false
+    $propset = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::FirstClassProperties)
     if ($script:itemPropsEws)
     {
-        $propset = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::FirstClassProperties)
+        $needsLoad = $true
         if ($script:itemPropsEws.Length -gt 0)
         {
             # We have additional properties to retrieve, so we reload the item asking for first class properties and all the additional ones
             $propset = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::FirstClassProperties, $script:itemPropsEws)
         }
-        $item.Load($propset)
+    }
+    
+    # Add MimeContent if export is enabled
+    if (![String]::IsNullOrEmpty($ExportMIMEToFileSystemPath))
+    {
+        $needsLoad = $true
+        $propset.Add([Microsoft.Exchange.WebServices.Data.ItemSchema]::MimeContent)
+    }
+    
+    if ($needsLoad)
+    {
+        LogVerbose "Loading additional properties for item: $($item.Subject)"
+        $item.Load($propset) | out-null
     }
 
     if (!$DoNotOutputMatches)
     {
         StoreFriendlyData $item $folderPath
+    }
+
+    # Export to MIME format if requested
+    if (![String]::IsNullOrEmpty($ExportMIMEToFileSystemPath))
+    {
+        LogVerbose "Exporting item to MIME format: $($item.Subject)"
+        ExportItemToMIME -Item $item -FolderPath $folderPath -ExportBasePath $ExportMIMEToFileSystemPath | out-null
     }
 
 	if ($Delete)
@@ -2160,6 +2257,7 @@ Function SearchFolder( $FolderId )
     $view.PropertySet = New-Object Microsoft.Exchange.WebServices.Data.PropertySet([Microsoft.Exchange.WebServices.Data.BasePropertySet]::IdOnly,
         [Microsoft.Exchange.WebServices.Data.ItemSchema]::Subject,
         [Microsoft.Exchange.WebServices.Data.EmailMessageSchema]::Sender)
+
     $view.Offset = 0
 	$view.Traversal = [Microsoft.Exchange.WebServices.Data.ItemTraversal]::Shallow
     if ($AssociatedItemsOnly)
