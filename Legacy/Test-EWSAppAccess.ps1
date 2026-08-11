@@ -17,7 +17,7 @@
 Tests accessing mailbox using EWS with application permissions.
 
 .DESCRIPTION
-Script to test accessing mailbox using EWS with application permissions.  If testing certificate authentication, ensure that the MSAL libraries are available in the same folder as this script or in a Program Files folder.
+Script to test accessing mailbox using EWS with application permissions.
 
 .EXAMPLE
 
@@ -30,120 +30,112 @@ Application permissions:
 #>
 
 param (
-    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in Azure AD.")]
+    [Parameter(Mandatory=$False,HelpMessage="The client Id that this script will identify as.  Must be registered in EntraId.")]
     [string]$AppId = "",
 
     [Parameter(Mandatory=$False,HelpMessage="The tenant Id (application must be registered in the same tenant being accessed).")]
     [string]$TenantId = "",
 
-    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the Azure registered application.")]
-    [string]$RedirectUri = "http://localhost/code",
+    [Parameter(Mandatory=$False,HelpMessage="The redirect Uri of the EntraId registered application (delegated flow).")]
+    [string]$RedirectUri = "",
 
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     [string]$SecretKey = "",
 
-    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  The certificate may be an X509Certificate2 object, certificate store path, or PFX path.")]
     $Certificate = $null,
+
+    [Parameter(Mandatory=$False,HelpMessage="Password for an encrypted PFX file specified with Certificate.")]
+    [System.Security.SecureString]$CertificatePassword = $null,
 
     [Parameter(Mandatory=$False,HelpMessage="The mailbox to access.  Required when application permissions are used (the mailbox is then accessed using impersonation).")]
     [string]$Mailbox = ""
 )
 
 
-function LoadLibraries()
+function GetTokenWithCertificate
 {
-    param (
-        [bool]$searchProgramFiles,
-        $dllNames,
-        [ref]$dllLocations = @()
-    )
-    # Attempt to find and load the specified libraries
-
-    foreach ($dllName in $dllNames)
+    $certificate = $Certificate
+    if ($certificate -is [string])
     {
-        # First check if the dll is in current directory
-        $dll = $null
-        $dll = Get-ChildItem $dllName -ErrorAction Ignore
-
-        if ($searchProgramFiles)
+        if (!(Test-Path -LiteralPath $certificate))
         {
-            if ($null -eq $dll)
-            {
-	            Write-Verbose "$dllName not found in current directory; searching Program Files folders."
-	            $dll = Get-ChildItem -Recurse "C:\Program Files (x86)" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
-	            if (!$dll)
-	            {
-		            $dll = Get-ChildItem -Recurse "C:\Program Files" -ErrorAction SilentlyContinue | Where-Object { ($_.PSIsContainer -eq $false) -and ( $_.Name -eq $dllName ) }
-	            }
-            }
+            throw "Certificate path not found: $certificate"
         }
 
-        if ($null -eq $dll)
+        $certificateItem = Get-Item -LiteralPath $certificate -ErrorAction Stop
+        if ($certificateItem -is [System.Security.Cryptography.X509Certificates.X509Certificate2])
         {
-            Write-Error "Unable to locate $dllName."
-            return $false
+            $certificate = $certificateItem
+        }
+        elseif ($null -ne $CertificatePassword)
+        {
+            $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificate, $CertificatePassword)
         }
         else
         {
-            try
-            {
-		        Write-Verbose ([string]::Format("Loading {2} v{0} found at: {1}", $dll.VersionInfo.FileVersion, $dll.VersionInfo.FileName, $dllName))
-		        Add-Type -Path $dll.VersionInfo.FileName
-                if ($dllLocations)
-                {
-                    $dllLocations.value += $dll.VersionInfo.FileName
-                }
-            }
-            catch
-            {
-                Write-Error "Failed to load $($dllName): $_"
-                return $false
-            }
-        }
-    }
-    return $true
-}
-
-function GetTokenWithCertificate
-{
-    # We use MSAL with certificate auth
-    if (!$script:msalApiLoaded)
-    {
-        $msalLocation = @()
-        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
-        if (!$script:msalApiLoaded)
-        {
-            Write-Error "Failed to load MSAL. Cannot continue with certificate authentication."
-            exit
+            $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificate)
         }
     }   
 
-    $cca = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($AppId)
-    $cca = $cca.WithCertificate($Certificate)
-    $cca = $cca.WithTenantId($TenantId)
-    $cca = $cca.Build()
-
-    $scopes = New-Object System.Collections.Generic.List[string]
-    $scopes.Add("https://outlook.office365.com/.default")
-    $acquire = $cca.AcquireTokenForClient($scopes)
-    if ($null -eq $acquire)
+    if ($certificate -isnot [System.Security.Cryptography.X509Certificates.X509Certificate2])
     {
-        Write-Error "Failed to create token acquisition object."
-        exit
+        throw "Certificate must be an X509Certificate2 object, certificate store path, or PFX path"
     }
-    
+    if (!$certificate.HasPrivateKey)
+    {
+        throw "The certificate does not contain a private key"
+    }
+
+    function ConvertToBase64Url([byte[]]$bytes)
+    {
+        return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    }
+
+    $tokenEndpoint = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $now = [DateTimeOffset]::UtcNow
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try
     {
-        $execCall = $acquire.ExecuteAsync()
-        $script:oauthToken = $execCall.Result
+        $thumbprint = ConvertToBase64Url ($sha256.ComputeHash($certificate.RawData))
+    }
+    finally
+    {
+        $sha256.Dispose()
+    }
+
+    $header = @{ alg = "RS256"; typ = "JWT"; 'x5t#S256' = $thumbprint } | ConvertTo-Json -Compress
+    $payload = @{ aud = $tokenEndpoint; iss = $AppId; sub = $AppId; jti = [Guid]::NewGuid().ToString(); nbf = $now.AddMinutes(-5).ToUnixTimeSeconds(); exp = $now.AddMinutes(10).ToUnixTimeSeconds() } | ConvertTo-Json -Compress
+    $unsignedToken = "$(ConvertToBase64Url ([Text.Encoding]::UTF8.GetBytes($header))).$(ConvertToBase64Url ([Text.Encoding]::UTF8.GetBytes($payload)))"
+
+    $rsa = $null
+    try
+    {
+        $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
+        if ($null -eq $rsa)
+        {
+            throw "Unable to access the certificate private key"
+        }
+        $signature = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($unsignedToken), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $clientAssertion = "$unsignedToken.$(ConvertToBase64Url $signature)"
+
+        $body = @{
+            grant_type = "client_credentials"
+            client_id = $AppId
+            scope = "https://outlook.office365.com/.default"
+            client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            client_assertion = $clientAssertion
+        }
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $body -ContentType "application/x-www-form-urlencoded"
     }
     catch
     {
         Write-Error "Failed to obtain OAuth token: $_"
-        exit # Failed to obtain a token
+        exit
     }
 
-    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
+    if ($null -ne $rsa) { $rsa.Dispose() }
+    $script:oAuthAccessToken = $script:oAuthToken.access_token
     if ($null -ne $script:oAuthAccessToken)
     {
         return
@@ -312,46 +304,6 @@ function GetInboxFolderId
     return $folderId
 }
 
-function GetFirstInboxItemId
-{
-    # Retrieve the Id of the first item in the given folder
-    param (
-        [Parameter(Mandatory=$true)]$FolderId
-    )
-
-    $request = @"
-    <m:FindItem Traversal="Shallow">
-      <m:ItemShape>
-        <t:BaseShape>IdOnly</t:BaseShape>
-      </m:ItemShape>
-      <m:IndexedPageItemView MaxEntriesReturned="1" Offset="0" BasePoint="Beginning" />
-      <m:ParentFolderIds>
-        <t:FolderId Id="$([System.Security.SecurityElement]::Escape($FolderId.Id))" ChangeKey="$([System.Security.SecurityElement]::Escape($FolderId.ChangeKey))" />
-      </m:ParentFolderIds>
-    </m:FindItem>
-"@
-
-    $responseXml = SendEWSRequest -RequestBody $request
-
-    $namespaces = New-Object System.Xml.XmlNamespaceManager($responseXml.NameTable)
-    $namespaces.AddNamespace("m", "http://schemas.microsoft.com/exchange/services/2006/messages")
-    $namespaces.AddNamespace("t", "http://schemas.microsoft.com/exchange/services/2006/types")
-
-    $responseMessage = $responseXml.SelectSingleNode("//m:FindItemResponseMessage", $namespaces)
-    if ($null -eq $responseMessage -or $responseMessage.ResponseClass -ne "Success")
-    {
-        throw "FindItem failed: $($responseMessage.MessageText)"
-    }
-
-    $itemId = $responseXml.SelectSingleNode("//m:RootFolder/t:Items/*[1]/t:ItemId", $namespaces)
-    if ($null -eq $itemId)
-    {
-        throw "FindItem succeeded but the Inbox contains no items to read"
-    }
-    return $itemId.Id
-}
-
-
 # Application permissions require a mailbox to impersonate; delegated permissions access the signed-in user's mailbox
 $script:appFlow = (![String]::IsNullOrEmpty($SecretKey)) -or ($null -ne $Certificate)
 if ($script:appFlow -and [String]::IsNullOrEmpty($Mailbox))
@@ -387,23 +339,11 @@ $inboxFolderId = $null
 try
 {
     $inboxFolderId = GetInboxFolderId
+    $mailboxAccessed = $true
 }
 catch
 {
     Write-Host "Failed to retrieve Inbox folder: $_" -ForegroundColor Red
-}
-
-if ($null -ne $inboxFolderId)
-{
-    try
-    {
-        [void](GetFirstInboxItemId -FolderId $inboxFolderId)
-        $mailboxAccessed = $true
-    }
-    catch
-    {
-        Write-Host "Failed to retrieve first Inbox message: $_" -ForegroundColor Red
-    }
 }
 
 if ($mailboxAccessed)
