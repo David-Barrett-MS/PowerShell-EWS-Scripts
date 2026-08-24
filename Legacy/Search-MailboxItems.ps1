@@ -93,8 +93,11 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.")]
     [string]$OAuthSecretKey = "",
 
-    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  Certificate auth requires MSAL libraries to be available.")]
+    [Parameter(Mandatory=$False,HelpMessage="If using application permissions, specify the secret key OR certificate.  The certificate may be an X509Certificate2 object, certificate store path, or PFX path.")]
     $OAuthCertificate = $null,
+
+    [Parameter(Mandatory=$False,HelpMessage="Password for an encrypted PFX file specified with OAuthCertificate.")]
+    [System.Security.SecureString]$OAuthCertificatePassword = $null,
 
     [Parameter(Mandatory=$False,HelpMessage="If set, OAuth tokens will be stored in global variables for access in other scripts/console.  These global variable will be checked by later scripts using delegate auth to prevent additional log-in prompts.")]	
     [switch]$GlobalTokenStorage,
@@ -153,7 +156,7 @@ param (
     [Parameter(Mandatory=$False,HelpMessage="Batch size (number of items batched into one EWS request) - this will be decreased if throttling is detected")]	
     [int]$BatchSize = 200
 )
-$script:ScriptVersion = "1.0.4"
+$script:ScriptVersion = "1.0.5"
 
 # Define our functions
 
@@ -284,7 +287,7 @@ Function ReportError($Context)
 #>** EWS/OAUTH FUNCTIONS START **#
 
 # These functions are common for all my EWS scripts and are injected as part of the build/publish process.  Changes should be made to EWSOAuth.ps1 code snippet, not the script being run.
-# EWS/OAuth library version: 1.0.5
+# EWS/OAuth library version: 1.0.6
 
 function LoadLibraries()
 {
@@ -344,63 +347,101 @@ function LoadLibraries()
 
 function GetTokenWithCertificate
 {
-    # We use MSAL with certificate auth
-    if (!$script:msalApiLoaded)
+    $certificate = $OAuthCertificate
+    if ($certificate -is [string])
     {
-        $msalLocation = @()
-        $script:msalApiLoaded = $(LoadLibraries -searchProgramFiles $false -dllNames @("Microsoft.Identity.Client.dll") -dllLocations ([ref]$msalLocation))
-        if (!$script:msalApiLoaded)
+        if (!(Test-Path -LiteralPath $certificate))
         {
-            Log "Failed to load MSAL.  Cannot continue with certificate authentication." Red
-            exit
+            Log "Certificate path not found: $certificate" Red
+            exit 1
         }
-    }   
 
-    $cca = [Microsoft.Identity.Client.ConfidentialClientApplicationBuilder]::Create($OAuthClientId)
-    $cca = $cca.WithCertificate($OAuthCertificate)
-    $cca = $cca.WithTenantId($OAuthTenantId)
-    $cca = $cca.Build()
-
-    $scopes = New-Object System.Collections.Generic.List[string]
-    $scopes.Add("https://outlook.office365.com/.default")
-    $acquire = $cca.AcquireTokenForClient($scopes)
-    if ($null -eq $acquire)
-    {
-        Log "Failed to create token acquisition object" Red
-        exit
+        $certificateItem = Get-Item -LiteralPath $certificate -ErrorAction Stop
+        if ($certificateItem -is [System.Security.Cryptography.X509Certificates.X509Certificate2])
+        {
+            $certificate = $certificateItem
+        }
+        elseif ($null -ne $OAuthCertificatePassword)
+        {
+            $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificate, $OAuthCertificatePassword)
+        }
+        else
+        {
+            $certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($certificate)
+        }
     }
-    LogVerbose "Requesting token using certificate auth"
-    
+
+    if ($certificate -isnot [System.Security.Cryptography.X509Certificates.X509Certificate2])
+    {
+        Log "OAuthCertificate must be an X509Certificate2 object, certificate store path, or PFX path" Red
+        exit 1
+    }
+    if (!$certificate.HasPrivateKey)
+    {
+        Log "The certificate does not contain a private key" Red
+        exit 1
+    }
+
+    function ConvertToBase64Url([byte[]]$bytes)
+    {
+        return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    }
+
+    $tokenEndpoint = "https://login.microsoftonline.com/$OAuthTenantId/oauth2/v2.0/token"
+    $now = [DateTimeOffset]::UtcNow
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try
     {
-        $execCall = $acquire.ExecuteAsync()
-        $script:oauthToken = $execCall.Result
+        $thumbprint = ConvertToBase64Url ($sha256.ComputeHash($certificate.RawData))
+    }
+    finally
+    {
+        $sha256.Dispose()
+    }
+
+    $header = @{ alg = "RS256"; typ = "JWT"; 'x5t#S256' = $thumbprint } | ConvertTo-Json -Compress
+    $payload = @{ aud = $tokenEndpoint; iss = $OAuthClientId; sub = $OAuthClientId; jti = [Guid]::NewGuid().ToString(); nbf = $now.AddMinutes(-5).ToUnixTimeSeconds(); exp = $now.AddMinutes(10).ToUnixTimeSeconds() } | ConvertTo-Json -Compress
+    $unsignedToken = "$(ConvertToBase64Url ([Text.Encoding]::UTF8.GetBytes($header))).$(ConvertToBase64Url ([Text.Encoding]::UTF8.GetBytes($payload)))"
+
+    $rsa = $null
+    try
+    {
+        $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
+        if ($null -eq $rsa)
+        {
+            throw "Unable to access the certificate private key"
+        }
+        $signature = $rsa.SignData([Text.Encoding]::UTF8.GetBytes($unsignedToken), [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        $clientAssertion = "$unsignedToken.$(ConvertToBase64Url $signature)"
+
+        $body = @{
+            grant_type = "client_credentials"
+            client_id = $OAuthClientId
+            scope = "https://outlook.office365.com/.default"
+            client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+            client_assertion = $clientAssertion
+        }
+        LogVerbose "Requesting token using certificate auth"
+        $script:oauthToken = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $body -ContentType "application/x-www-form-urlencoded"
+        $script:oAuthAccessToken = $script:oAuthToken.access_token
+        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
+        $script:Impersonate = $true
     }
     catch
     {
-        Log "Failed to obtain OAuth token: $Error" Red
-        exit # Failed to obtain a token
+        Log "Failed to obtain OAuth token: $_" Red
+        exit 1
+    }
+    finally
+    {
+        if ($null -ne $rsa) { $rsa.Dispose() }
     }
 
-    $script:oAuthAccessToken = $script:oAuthToken.AccessToken
-    if ($null -ne $script:oAuthAccessToken)
+    if ([String]::IsNullOrEmpty($script:oAuthAccessToken))
     {
-        $script:oauthTokenAcquireTime = [DateTime]::UtcNow
-        $script:Impersonate = $true
-        return
-    }
-
-    # If we get here, we don't have a token so can't continue
-    if ($null -ne $execCall.Exception)
-    {
-        $global:CertException = $execCall.Exception
-        Log "Failed to obtain OAuth token: $($global:CertException.Message)" Red
-        Log "Full exception available in `$CertException"
-    }
-    else {
         Log "Failed to obtain OAuth token (no error thrown)" Red
+        exit 1
     }
-    exit
 }
 
 function GetTokenViaCode
@@ -659,14 +700,7 @@ function ApplyEWSOAuthCredentials
         {
             # Wait until token expires (we do this after every call when debugging OAuth)
             # Access tokens can't be revoked, but a policy can be assigned to reduce lifetime to 10 minutes: https://learn.microsoft.com/en-us/graph/api/resources/tokenlifetimepolicy?view=graph-rest-1.0
-            if ( $null -ne $OAuthCertificate)
-            {
-                $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
-            }
-            else
-            {
-                $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
-            }
+            $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
             $timeUntilExpiry = $tokenExpire.Subtract([DateTime]::UtcNow).TotalSeconds
             if ($timeUntilExpiry -gt 0)
             {
@@ -686,35 +720,19 @@ function ApplyEWSOAuthCredentials
         }
     }
     
-    if ($null -ne $OAuthCertificate)
-    {
-        if ( [DateTime]::UtcNow -lt $script:oauthToken.ExpiresOn.UtcDateTime) { return }
-    }
-    elseif ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
+    if ($script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -gt [DateTime]::UtcNow.AddMinutes(1)) { return }
 
     # The token has expired and needs refreshing
     LogVerbose("OAuth access token invalid, attempting to renew")
     $exchangeCredentials = GetOAuthCredentials -RenewToken
     if ($null -eq $exchangeCredentials) { return }
 
-    if ($null -ne $OAuthCertificate)
+    if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
     {
-        $tokenExpire = $script:oauthToken.ExpiresOn.UtcDateTime
-        if ( [DateTime]::UtcNow -ge $tokenExpire)
-        {
-            Log "OAuth Token renewal failed (certificate auth)"
-            exit # We no longer have access to the mailbox, so we stop here
-        }
+        Log "OAuth Token renewal failed"
+        exit # We no longer have access to the mailbox, so we stop here
     }
-    else
-    {
-        if ( $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in) -lt [DateTime]::UtcNow )
-        { 
-            Log "OAuth Token renewal failed"
-            exit # We no longer have access to the mailbox, so we stop here
-        }
-        $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
-    }
+    $tokenExpire = $script:oauthTokenAcquireTime.AddSeconds($script:oauthToken.expires_in)
 
     Log "OAuth token successfully renewed; new expiry: $tokenExpire"
     if ($script:services.Count -gt 0)
@@ -1855,7 +1873,21 @@ Function ProcessItem( $item, $folderPath )
     if ($needsLoad)
     {
         LogVerbose "Loading additional properties for item: $($item.Subject)"
-        $item.Load($propset) | out-null
+        try {
+            $item.Load($propset)    
+        }
+        catch {
+            if (Throttled)
+            {
+                try {
+                    $item.Load($propset)    
+                }
+                catch {
+                    Log "Failed to load additional properties for item: $($item.Subject)" Red
+                }
+            }
+        }
+        
     }
 
     if (!$DoNotOutputMatches)
@@ -1906,10 +1938,22 @@ Function GetFolder()
     {
         # Well known folder, so bind to it directly
         $wkf = $FolderPath.SubString(20)
+        $restOfPath = ""
+        $restOfPathStart = $wkf.IndexOf("\")
+        if ($restOfPathStart -gt -1)
+        {
+            $restOfPath = $wkf.SubString($restOfPathStart+1)
+            $wkf = $wkf.SubString(0, $restOfPathStart)
+        }
         LogVerbose "Attempting to bind to well known folder: $wkf"
         $folderId = New-Object Microsoft.Exchange.WebServices.Data.FolderId([Microsoft.Exchange.WebServices.Data.WellKnownFolderName]::$wkf, $mbx )
         $Folder = ThrottledFolderBind($folderId)
-        return $Folder
+        if (!$Folder -or [String]::IsNullOrEmpty($restOfPath))
+        {
+            return $Folder
+        }
+        $RootFolder = $Folder
+        $FolderPath = $restOfPath
     }
 
 	$Folder = $RootFolder
